@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "preview_pages" text[] DEFAULT '{}' NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "right_click_allowed" boolean DEFAULT false NOT NULL;

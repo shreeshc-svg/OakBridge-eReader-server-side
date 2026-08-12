@@ -1,0 +1,1 @@
+ALTER TABLE "reading_progress" ADD COLUMN "current_cfi" varchar(255);

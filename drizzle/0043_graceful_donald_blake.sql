@@ -1,0 +1,1 @@
+ALTER TABLE "subscription_plans" ADD COLUMN "duration_months" integer DEFAULT 12 NOT NULL;

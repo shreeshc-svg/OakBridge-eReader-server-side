@@ -1,0 +1,1 @@
+ALTER TABLE "cart_items" ADD COLUMN "abandoned_notified" boolean DEFAULT false NOT NULL;
