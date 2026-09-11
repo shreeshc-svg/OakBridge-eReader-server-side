@@ -106,6 +106,42 @@ export const get_long_lived_presigned_url = async (
      return getSignedUrl(s3_client, command, { expiresIn });
 };
 
+/**
+ * If `url` points at a book preview PDF in OUR bucket, return its S3 key
+ * (e.g. "previews/<uuid>.pdf"); otherwise null. Used by the public preview
+ * proxy so it can never be used to fetch arbitrary URLs.
+ */
+export const get_preview_key_from_url = (url: string): string | null => {
+     let parsed: URL;
+     try {
+          parsed = new URL(url);
+     } catch {
+          return null;
+     }
+     if (parsed.protocol !== 'https:') return null;
+
+     const bucket = awsConfig.AWS_S3_BUCKET_NAME;
+     const region = awsConfig.AWS_REGION;
+     const host = parsed.hostname.toLowerCase();
+     let key: string;
+     if (host === `${bucket}.s3.${region}.amazonaws.com` || host === `${bucket}.s3.amazonaws.com`) {
+          key = parsed.pathname.slice(1);
+     } else if (host === `s3.${region}.amazonaws.com` && parsed.pathname.startsWith(`/${bucket}/`)) {
+          key = parsed.pathname.slice(bucket.length + 2);
+     } else {
+          return null;
+     }
+
+     try {
+          key = decodeURIComponent(key);
+     } catch {
+          return null;
+     }
+     // Only files uploaded to the previews/ folder, no path tricks
+     if (!/^previews\/[A-Za-z0-9._-]+$/.test(key) || key.includes('..')) return null;
+     return key;
+};
+
 export const delete_from_s3 = async (fileKeyOrUrl: string): Promise<void> => {
      try {
           const fileKey = get_s3_key_from_url(fileKeyOrUrl);
