@@ -9,6 +9,7 @@ import { bookshelves, free_candidate_allowed_books } from '../../db/schemas';
 import { and, eq, inArray } from 'drizzle-orm';
 import { hasActiveInstitutionSubscription } from '../../utils/subscription.helper';
 import { deriveBookDrmKey } from '../../utils/drm';
+import { get_preview_key_from_url, get_presigned_url } from '../../utils/s3';
 import { book_categories, institution_allowed_categories, institution_allowed_books, users } from '../../db/schemas';
 
 export async function checkBookAllowedBatch(
@@ -793,21 +794,26 @@ export const books_controller = {
                          .json({ message: 'URL query parameter is required' });
                }
 
-               // Verify this is a preview file URL to prevent arbitrary SSRF
-               if (!url.includes('previews') && !url.includes('oakbridge')) {
+               // Only book preview files in our own S3 bucket. We never fetch the
+               // URL we were given: we take the file key from it and create our own
+               // signed S3 link, so this can't be used to reach other addresses.
+               const key = get_preview_key_from_url(url);
+               if (!key) {
                     return res.status(403).json({
                          message: 'Forbidden: Invalid URL for preview proxying',
                     });
                }
 
-               const response = await fetch(url);
+               const signedUrl = await get_presigned_url(key);
+               const response = await fetch(signedUrl, { redirect: 'error' });
                if (!response.ok || !response.body) {
-                    return res.status(500).json({
-                         message: 'Failed to fetch preview file from storage',
+                    return res.status(404).json({
+                         message: 'Preview file not found',
                     });
                }
 
                res.setHeader('Content-Type', 'application/pdf');
+               res.setHeader('Cache-Control', 'private, max-age=300');
 
                const reader = response.body.getReader();
                while (true) {
@@ -817,9 +823,11 @@ export const books_controller = {
                }
                res.end();
           } catch (error: any) {
-               return res.status(500).json({
-                    message: error.message || 'Failed to proxy preview file',
-               });
+               console.error('[PREVIEW] Failed to proxy preview file:', error);
+               if (!res.headersSent) {
+                    return res.status(500).json({ message: 'Failed to load preview file' });
+               }
+               res.end();
           }
      },
 };
