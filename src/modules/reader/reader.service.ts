@@ -6,9 +6,67 @@ import {
      reading_sessions,
      bookshelves,
      bookmarks,
+     books,
+     users,
+     payments,
+     free_candidate_allowed_books,
 } from '../../db/schemas';
+import { hasActiveInstitutionSubscription } from '../../utils/subscription.helper';
 
 import crypto from 'crypto';
+
+/**
+ * Whether a user is entitled to have this book on their shelf.
+ * Mirrors the rules used by POST /api/library/add: free books, books a free
+ * candidate has been granted, institution subscribers, or a completed purchase.
+ */
+async function canUserShelveBook(
+     user_id: string,
+     book_id: string
+): Promise<boolean> {
+     const [book] = await db
+          .select({ price: books.price })
+          .from(books)
+          .where(eq(books.id, book_id))
+          .limit(1);
+     if (!book) return false;
+     if (!book.price || book.price <= 0) return true;
+
+     const [user] = await db
+          .select({ is_free_candidate: users.is_free_candidate })
+          .from(users)
+          .where(eq(users.id, user_id))
+          .limit(1);
+
+     if (user?.is_free_candidate) {
+          const [allowed] = await db
+               .select({ book_id: free_candidate_allowed_books.book_id })
+               .from(free_candidate_allowed_books)
+               .where(
+                    and(
+                         eq(free_candidate_allowed_books.user_id, user_id),
+                         eq(free_candidate_allowed_books.book_id, book_id)
+                    )
+               )
+               .limit(1);
+          return !!allowed;
+     }
+
+     if (await hasActiveInstitutionSubscription(user_id)) return true;
+
+     const [payment] = await db
+          .select({ id: payments.id })
+          .from(payments)
+          .where(
+               and(
+                    eq(payments.user_id, user_id),
+                    eq(payments.book_id, book_id),
+                    eq(payments.status, 'completed')
+               )
+          )
+          .limit(1);
+     return !!payment;
+}
 
 export const reader_service = {
      async get_progress(user_id: string, book_id: string) {
@@ -147,7 +205,10 @@ export const reader_service = {
                                    updatedAt: new Date(),
                               })
                               .where(eq(bookshelves.id, existingShelf[0].id));
-                    } else {
+                    } else if (await canUserShelveBook(user_id, book_id)) {
+                         // Only entitled users may have a new shelf row created here;
+                         // a shelf row grants read access, so this must not be a
+                         // way to get paid books for free.
                          await db.insert(bookshelves).values({
                               id: crypto.randomUUID(),
                               user_id,
