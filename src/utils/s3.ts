@@ -88,6 +88,24 @@ export const get_presigned_url = async (
      return signedUrl;
 };
 
+/**
+ * Presigned URL without caching, for links that must keep working for days
+ * (e.g. book covers inside emails). AWS allows at most 7 days.
+ */
+export const get_long_lived_presigned_url = async (
+     fileKeyOrUrl: string,
+     expiresIn: number = 7 * 24 * 60 * 60
+): Promise<string> => {
+     if (!fileKeyOrUrl) return '';
+     const fileKey = get_s3_key_from_url(fileKeyOrUrl);
+     if (!fileKey) return '';
+     const command = new GetObjectCommand({
+          Bucket: awsConfig.AWS_S3_BUCKET_NAME,
+          Key: fileKey,
+     });
+     return getSignedUrl(s3_client, command, { expiresIn });
+};
+
 export const delete_from_s3 = async (fileKeyOrUrl: string): Promise<void> => {
      try {
           const fileKey = get_s3_key_from_url(fileKeyOrUrl);

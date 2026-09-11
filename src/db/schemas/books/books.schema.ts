@@ -33,6 +33,8 @@ export const books = pgTable('books', {
      access_period_days: integer('access_period_days'),
      isTrending: boolean('is_trending').default(false).notNull(),
      isNewRelease: boolean('is_new_release').default(false).notNull(),
+     // When this book was announced to readers by email; null = not announced yet
+     announced_at: timestamp('announced_at'),
      createdAt: timestamp('created_at').notNull().defaultNow(),
      updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });

@@ -81,4 +81,7 @@ app.use('/api/notifications', notificationsRouter);
 import cartRouter from './modules/cart/cart.routes';
 app.use('/api/cart', cartRouter);
 
+import mailingRouter from './modules/mailing/mailing.routes';
+app.use('/api/mailing', mailingRouter);
+
 export default app;

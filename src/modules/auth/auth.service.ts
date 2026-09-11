@@ -819,6 +819,7 @@ export const auth_service = {
                billing_state?: string;
                billing_postal_code?: string;
                billing_country?: string;
+               marketing_emails?: boolean;
           }
      ) {
           const updateData: Partial<NewUser> = {};
@@ -859,6 +860,9 @@ export const auth_service = {
           }
           if (data.billing_country !== undefined) {
                updateData.billing_country = data.billing_country;
+          }
+          if (typeof data.marketing_emails === 'boolean') {
+               updateData.marketing_emails = data.marketing_emails;
           }
 
           if (Object.keys(updateData).length === 0) {
