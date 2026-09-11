@@ -10,12 +10,10 @@ import {
      books,
      bookshelves,
      payments,
-     users,
      categories,
 } from '../../db/schemas';
 import { db } from '../../db/db';
 import { eq, inArray, and, notInArray, sql, desc } from 'drizzle-orm';
-import { sendBookAdvertisementMail, sendFreeBookAdvertisementMail } from '../../utils/mail.service';
 
 const slugify = (text: string): string => {
      return text
@@ -237,78 +235,9 @@ export const books_service = {
                );
           }
 
-          // Broadcast new book email notification to all users asynchronously
-          (async () => {
-               try {
-                    const active_readers = await db
-                         .select({
-                              email: users.email,
-                              username: users.username,
-                         })
-                         .from(users)
-                         .where(
-                              inArray(users.role, [
-                                   'USER',
-                                   'INSTITUTION_MEMBER',
-                              ])
-                         );
-
-                    const isFree = created_book.price === 0;
-                    const batchSize = 25;
-                    for (let i = 0; i < active_readers.length; i += batchSize) {
-                         const chunk = active_readers.slice(i, i + batchSize);
-                         await Promise.all(
-                              chunk.map((reader) => {
-                                   if (isFree) {
-                                        return sendFreeBookAdvertisementMail(
-                                             reader.email,
-                                             reader.username || 'Reader',
-                                             {
-                                                  id: created_book.id,
-                                                  title: created_book.title,
-                                                  author: created_book.author || 'Oakbridge',
-                                                  description: created_book.description || '',
-                                                  cover_url: created_book.cover_image_url,
-                                             }
-                                        ).catch((err) =>
-                                             console.error(
-                                                  `[MAIL] Free book broadcast failed for user ${reader.email}:`,
-                                                  err
-                                             )
-                                        );
-                                   } else {
-                                        return sendBookAdvertisementMail(
-                                             reader.email,
-                                             reader.username || 'Reader',
-                                             {
-                                                  id: created_book.id,
-                                                  title: created_book.title,
-                                                  author:
-                                                       created_book.author ||
-                                                       'Oakbridge',
-                                                  description:
-                                                       created_book.description ||
-                                                       '',
-                                                  cover_url:
-                                                       created_book.cover_image_url,
-                                             }
-                                        ).catch((err) =>
-                                             console.error(
-                                                  `[MAIL] Broadcast failed for user ${reader.email}:`,
-                                                  err
-                                             )
-                                        );
-                                   }
-                              })
-                         );
-                    }
-               } catch (err) {
-                    console.error(
-                         '[MAIL] Failed to broadcast book release notification:',
-                         err
-                    );
-               }
-          })();
+          // No email is sent here. New books are announced from the admin
+          // 'Email Updates' page (see modules/mailing), so bulk uploads don't
+          // send one email per book to every reader.
 
           return await map_book_with_presigned_urls(created_book);
      },

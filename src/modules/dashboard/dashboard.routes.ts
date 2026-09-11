@@ -39,6 +39,8 @@ router.patch(
 // Route to manually trigger the cart reminder job for testing/Postman
 router.post(
      '/trigger-cart-reminder-test',
+     authenticate,
+     check_role(['SUPERADMIN']),
      dashboard_controller.trigger_cart_reminder_test
 );
 

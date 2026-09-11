@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
-import { mailConfig } from '../config/app.config';
+import crypto from 'crypto';
+import { mailConfig, securityConfig } from '../config/app.config';
 import { generateInvoicePDF } from './pdf.service';
 
 const transporter = nodemailer.createTransport({
@@ -11,6 +12,60 @@ const transporter = nodemailer.createTransport({
           pass: mailConfig.auth.smtp_password,
      },
 });
+
+// ── Marketing email helpers (unsubscribe) ───────────────────────────────────
+
+const getUnsubscribeSecret = (): string => {
+     const secret = process.env.UNSUBSCRIBE_SECRET || securityConfig.jwtSecret;
+     if (!secret) {
+          throw new Error('UNSUBSCRIBE_SECRET / ACCESS_TOKEN_SECRET is not configured');
+     }
+     return secret;
+};
+
+/** Token that lets a user unsubscribe from a link without logging in. */
+export const makeUnsubscribeToken = (userId: string): string =>
+     crypto
+          .createHmac('sha256', getUnsubscribeSecret())
+          .update(`unsubscribe:${userId}`)
+          .digest('hex');
+
+export const verifyUnsubscribeToken = (userId: string, token: string): boolean => {
+     if (!userId || !token) return false;
+     const expected = Buffer.from(makeUnsubscribeToken(userId));
+     const given = Buffer.from(String(token));
+     return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+};
+
+/** Public URL of the backend API as seen from an email client. */
+const apiPublicUrl = (): string =>
+     process.env.API_PUBLIC_URL ||
+     `${process.env.CLIENT_URL || 'http://localhost:3000'}/api`;
+
+export const getUnsubscribeUrl = (userId: string): string =>
+     `${apiPublicUrl()}/mailing/unsubscribe?u=${encodeURIComponent(userId)}&t=${makeUnsubscribeToken(userId)}`;
+
+/** Headers so Gmail/Outlook show their own "Unsubscribe" button (RFC 8058). */
+const unsubscribeHeaders = (userId?: string): Record<string, string> | undefined =>
+     userId
+          ? {
+                 'List-Unsubscribe': `<${getUnsubscribeUrl(userId)}>`,
+                 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+            }
+          : undefined;
+
+const unsubscribeFooterHtml = (userId?: string): string =>
+     userId
+          ? `<p style="margin:10px 0 0;font-size:12px;color:#6B7280;">Don't want these emails? <a href="${getUnsubscribeUrl(userId)}" style="color:#6B7280;text-decoration:underline;">Unsubscribe</a>.</p>`
+          : '';
+
+const escapeHtml = (value: string): string =>
+     String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
 
 export const send_otp_mail = async (email: string, otp: string) => {
      await transporter.sendMail({
@@ -123,11 +178,13 @@ export const sendWelcomeMail = async (email: string, username: string) => {
 export const sendInactivityReminderMail = async (
      email: string,
      username: string,
-     bookTitle: string
+     bookTitle: string,
+     userId?: string
 ) => {
      await transporter.sendMail({
           from: process.env.SMTP_EMAIL || mailConfig.auth.smtp_email,
           to: email,
+          headers: unsubscribeHeaders(userId),
           subject: `Pick up where you left off: ${bookTitle}`,
           html: `
                <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
@@ -149,6 +206,7 @@ export const sendInactivityReminderMail = async (
                      </td></tr>
                      <tr><td style="padding:24px 36px 36px;">
                        <p style="margin:0;font-size:12px;color:#4B5563;">You received this email because "${bookTitle}" is on your Oakbridge Reader bookshelf. Oakbridge Publishing, B3 Tower, Spaze i-Tech Park, Sector 49, Gurugram, Haryana 122018.</p>
+                       ${unsubscribeFooterHtml(userId)}
                      </td></tr>
                    </table>
                  </td></tr>
@@ -284,7 +342,8 @@ export const sendAbandonedCartMail = async (
      email: string,
      username: string,
      items: { title: string; price: number }[],
-     type: '12h' | '1w' | '1m'
+     type: '12h' | '1w' | '1m',
+     userId?: string
 ) => {
      const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
@@ -329,6 +388,7 @@ export const sendAbandonedCartMail = async (
      await transporter.sendMail({
           from: process.env.SMTP_EMAIL || mailConfig.auth.smtp_email,
           to: email,
+          headers: unsubscribeHeaders(userId),
           subject,
           html: `
                <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
@@ -351,6 +411,10 @@ export const sendAbandonedCartMail = async (
                      </td></tr>
                      <tr><td style="padding:28px 36px 40px;">
                        <a href="${clientUrl}/cart" style="display:inline-block;background-color:#002B5C;color:#FFFFFF;text-decoration:none;font-size:14px;font-weight:600;padding:14px 30px;">Complete your order</a>
+                     </td></tr>
+                     <tr><td style="padding:0 36px 36px;">
+                       <p style="margin:0;font-size:12px;color:#4B5563;">You received this email because you have books in your Oakbridge cart. Oakbridge Publishing, B3 Tower, Spaze i-Tech Park, Sector 49, Gurugram, Haryana 122018.</p>
+                       ${unsubscribeFooterHtml(userId)}
                      </td></tr>
                    </table>
                  </td></tr>
@@ -559,6 +623,99 @@ export const send_contact_notification_mail = async (
                      </td></tr>
                      <tr><td style="padding:16px 36px 36px;">
                        <p style="margin:0;font-size:12px;color:#64748B;line-height:1.5;">Clicking <strong>Reply</strong> in your email client will send a direct reply to <strong>${email}</strong>.</p>
+                     </td></tr>
+                   </table>
+                 </td></tr>
+               </table>
+               </body></html>
+          `,
+     });
+};
+
+/**
+ * One email announcing one or more books, sent from the admin 'Email Updates' page.
+ * Always includes an unsubscribe link.
+ */
+export const sendNewBooksAnnouncementMail = async (
+     recipient: { id: string; email: string; username: string | null },
+     books: {
+          id: string;
+          title: string;
+          author: string;
+          description: string;
+          cover_url: string;
+          price: number;
+     }[],
+     options: { subject?: string; message?: string } = {}
+) => {
+     const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+     const single = books.length === 1;
+     const subject =
+          options.subject?.trim() ||
+          (single
+               ? `New Release: "${books[0].title}" by ${books[0].author}`
+               : `${books.length} new books on Oakbridge`);
+     const intro = options.message?.trim()
+          ? escapeHtml(options.message.trim()).replace(/\n/g, '<br />')
+          : single
+            ? 'A new book has just been published on Oakbridge.'
+            : `${books.length} new books have just been published on Oakbridge.`;
+
+     const booksHtml = books
+          .map((book) => {
+               const description =
+                    book.description.length > 150
+                         ? book.description.substring(0, 150) + '...'
+                         : book.description;
+               const price =
+                    book.price > 0
+                         ? `₹${(book.price / 100).toLocaleString('en-IN')}`
+                         : 'Free';
+               return `
+                         <tr><td style="padding:0 36px 12px;">
+                           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F8FAFC;border:1px solid #E5E7EB;padding:16px;border-radius:8px;">
+                             <tr>
+                               <td style="width:90px;vertical-align:top;padding-right:16px;">
+                                 <img src="${escapeHtml(book.cover_url)}" alt="${escapeHtml(book.title)} cover" width="90" style="width:90px;height:auto;border-radius:6px;display:block;" />
+                               </td>
+                               <td style="vertical-align:top;">
+                                 <h3 style="margin:0 0 4px;color:#002B5C;font-family:Georgia,serif;font-weight:normal;font-size:17px;">${escapeHtml(book.title)}</h3>
+                                 <p style="margin:0 0 8px;color:#6B7280;font-size:13px;">By ${escapeHtml(book.author)} · ${price}</p>
+                                 <p style="margin:0 0 10px;color:#4B5563;font-size:13px;line-height:1.5;">${escapeHtml(description)}</p>
+                                 <a href="${clientUrl}/book/${book.id}" style="color:#002B5C;font-size:13px;font-weight:600;">View book →</a>
+                               </td>
+                             </tr>
+                           </table>
+                         </td></tr>`;
+          })
+          .join('');
+
+     await transporter.sendMail({
+          from: process.env.SMTP_EMAIL || mailConfig.auth.smtp_email,
+          to: recipient.email,
+          headers: unsubscribeHeaders(recipient.id),
+          subject,
+          html: `
+               <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
+               <body style="margin:0;padding:0;background-color:#F5F7FA;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#002B5C;">
+               <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F5F7FA;padding:40px 16px;">
+                 <tr><td align="center">
+                   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;background-color:#FFFFFF;border:1px solid #E5E7EB;">
+                     <tr><td style="background-color:#002B5C;padding:28px 36px;color:#FFFFFF;">
+                       <div style="font-family:Georgia,serif;font-size:22px;">Oakbridge <span style="color:#F59E0B;">Publishing</span></div>
+                       <div style="font-family:monospace;text-transform:uppercase;letter-spacing:2px;font-size:11px;margin-top:6px;color:rgba(255,255,255,0.6);">${single ? 'New Release' : 'New Releases'}</div>
+                     </td></tr>
+                     <tr><td style="padding:36px 36px 20px;">
+                       <h1 style="margin:0;font-family:Georgia,serif;font-weight:normal;font-size:24px;color:#002B5C;">Hi ${escapeHtml(recipient.username || 'Reader')},</h1>
+                       <p style="margin:14px 0 0;font-size:15px;line-height:1.6;color:#4B5563;">${intro}</p>
+                     </td></tr>
+                     ${booksHtml}
+                     <tr><td style="padding:16px 36px 8px;">
+                       <a href="${clientUrl}/" style="display:inline-block;background-color:#002B5C;color:#FFFFFF;text-decoration:none;font-size:14px;font-weight:600;padding:14px 28px;">Browse the bookstore</a>
+                     </td></tr>
+                     <tr><td style="padding:24px 36px 36px;">
+                       <p style="margin:0;font-size:12px;color:#4B5563;">You received this email because you are a registered reader on Oakbridge. Oakbridge Publishing, B3 Tower, Spaze i-Tech Park, Sector 49, Gurugram, Haryana 122018.</p>
+                       ${unsubscribeFooterHtml(recipient.id)}
                      </td></tr>
                    </table>
                  </td></tr>

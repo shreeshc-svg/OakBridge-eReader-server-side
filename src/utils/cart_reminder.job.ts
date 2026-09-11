@@ -4,12 +4,15 @@ import { cart_items, books, users } from '../db/schemas';
 import { eq, and, lt } from 'drizzle-orm';
 import { notifications_repository } from '../modules/notifications/notifications.repository';
 import { sendAbandonedCartMail } from './mail.service';
+import { EMAIL_SETTING_KEYS, isEmailSettingEnabled } from './email_settings';
 import crypto from 'crypto';
 
 export const checkAndNotifyAbandonedCarts = async (bypassTimeCheck: boolean = false) => {
      console.log('[JOBS] Checking for abandoned carts...');
      try {
           const now = new Date();
+          // In-app notifications are always created; the email is optional.
+          const emailsEnabled = await isEmailSettingEnabled(EMAIL_SETTING_KEYS.cart_reminders);
 
           // Calculate time thresholds
           const twelveHoursAgo = new Date(now.getTime() - 12 * 60 * 60 * 1000);
@@ -58,6 +61,7 @@ export const checkAndNotifyAbandonedCarts = async (bypassTimeCheck: boolean = fa
                          bookPrice: books.price,
                          userEmail: users.email,
                          username: users.username,
+                         marketingEmails: users.marketing_emails,
                     })
                     .from(cart_items)
                     .innerJoin(books, eq(cart_items.book_id, books.id))
@@ -74,7 +78,8 @@ export const checkAndNotifyAbandonedCarts = async (bypassTimeCheck: boolean = fa
                     books: { title: string; price: number }[], 
                     itemIds: string[], 
                     email: string, 
-                    username: string 
+                    username: string,
+                    marketingEmails: boolean
                }>();
 
                for (const item of items) {
@@ -83,7 +88,8 @@ export const checkAndNotifyAbandonedCarts = async (bypassTimeCheck: boolean = fa
                               books: [], 
                               itemIds: [], 
                               email: item.userEmail || '', 
-                              username: item.username || '' 
+                              username: item.username || '',
+                              marketingEmails: item.marketingEmails
                          });
                     }
                     const userCart = userCartMap.get(item.userId)!;
@@ -108,9 +114,9 @@ export const checkAndNotifyAbandonedCarts = async (bypassTimeCheck: boolean = fa
                               message: `You left ${booksListStr} in your cart. Complete your purchase now so you don't miss out!`,
                          }]);
 
-                         // Send email notification
-                         if (details.email) {
-                              await sendAbandonedCartMail(details.email, details.username, details.books, tier.name);
+                         // Send email notification (admin switch + user's unsubscribe choice)
+                         if (details.email && emailsEnabled && details.marketingEmails) {
+                              await sendAbandonedCartMail(details.email, details.username, details.books, tier.name, userId);
                          }
 
                          // Mark these cart items as notified for this tier
