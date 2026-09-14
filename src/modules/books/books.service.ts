@@ -362,6 +362,7 @@ export const books_service = {
                isNewRelease?: boolean;
                cover_image_alt?: string;
                preview_pages_alt?: string | string[];
+               is_set?: boolean;
           }>,
           files?: {
                cover_image?: Express.Multer.File;
