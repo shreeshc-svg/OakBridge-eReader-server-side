@@ -529,6 +529,12 @@ export const books_controller = {
                if (isNewRelease !== undefined) {
                     updateData.isNewRelease = isNewRelease === 'true' || isNewRelease === true;
                }
+               // Turning an existing title into a multi-volume set (its volumes
+               // are then uploaded one at a time)
+               if (req.body.is_set !== undefined) {
+                    updateData.is_set =
+                         req.body.is_set === 'true' || req.body.is_set === true;
+               }
 
                const updated_book = await books_service.update_book(
                     id,

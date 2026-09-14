@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { db } from '../../db/db';
-import { eq, desc, and, or, gte, lt, count, sql, sum } from 'drizzle-orm';
+import { eq, desc, and, or, gte, lt, count, isNull, sql, sum } from 'drizzle-orm';
 import { reading_progress } from '../../db/schemas/dashboard/reading_progress.schema';
 import { reading_sessions } from '../../db/schemas/dashboard/reading_sessions.schema';
 import { bookshelves } from '../../db/schemas/dashboard/bookshelves.schema';
@@ -121,10 +121,18 @@ export const dashboard_controller = {
                          id: books.id,
                          added_at: bookshelves.added_at,
                          access_period_days: books.access_period_days,
+                         is_set: books.is_set,
                     })
                          .from(bookshelves)
                          .innerJoin(books, eq(bookshelves.book_id, books.id))
-                         .where(eq(bookshelves.user_id, user_id))
+                         // A multi-volume set is one entry in the library; its
+                         // volumes are listed inside it, not alongside it.
+                         .where(
+                              and(
+                                   eq(bookshelves.user_id, user_id),
+                                   isNull(books.set_parent_id)
+                              )
+                         )
                          .orderBy(desc(bookshelves.added_at)),
                ]);
 
