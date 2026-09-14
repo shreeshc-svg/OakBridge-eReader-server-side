@@ -5,18 +5,24 @@ import { payments, users, free_candidate_allowed_books } from '../../db/schemas'
 import { and, eq } from 'drizzle-orm';
 import { books_service } from '../books/books.service';
 import { hasActiveInstitutionSubscription } from '../../utils/subscription.helper';
+import { entitlement_book_id } from '../../utils/book_sets';
 
 export const library_controller = {
      add_book: async (req: Request, res: Response) => {
           try {
                const user_id = (req as any).user.id;
-               const { book_id } = req.body;
+               const { book_id: requested_book_id } = req.body;
 
-               if (!book_id) {
+               if (!requested_book_id) {
                     return res
                          .status(400)
                          .json({ message: 'book_id is required' });
                }
+
+               // A volume is never added on its own: it resolves to its parent
+               // set, and the entitlement checks below run against that set -
+               // otherwise a volume's price of 0 would hand over the whole set.
+               const book_id = await entitlement_book_id(requested_book_id);
 
                // Verify authorization for paid books
                const book = await books_service.get_book_by_id(book_id);

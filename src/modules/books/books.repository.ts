@@ -1,4 +1,4 @@
-import { eq, ilike, and, or, inArray, InferInsertModel } from 'drizzle-orm';
+import { eq, ilike, and, or, inArray, isNull, InferInsertModel } from 'drizzle-orm';
 import { books, book_categories, categories, users } from '../../db/schemas';
 import { db } from '../../db/db';
 
@@ -20,10 +20,12 @@ export const books_repository = {
      },
 
      async find_book_by_isbn(isbn: string) {
+          // Volumes deliberately share their set's ISBN, so they are excluded
+          // from the uniqueness check (the DB index is partial in the same way).
           const result = await db
                .select()
                .from(books)
-               .where(eq(books.isbn, isbn))
+               .where(and(eq(books.isbn, isbn), isNull(books.set_parent_id)))
                .limit(1);
           return result[0] || null;
      },
@@ -37,7 +39,9 @@ export const books_repository = {
           allowedCategoryRestrictions?: { categoryId: string; allowAllBooks: boolean }[];
           allowedBookIds?: string[];
      }) {
-          const conditions = [];
+          // Volumes of a multi-volume set are never listed on their own: only
+          // the set itself appears in the store, search and admin book lists.
+          const conditions = [isNull(books.set_parent_id)];
           if (filters?.authorId)
                conditions.push(eq(books.uploader_id, filters.authorId));
 
@@ -121,6 +125,7 @@ export const books_repository = {
                     access_period_days: books.access_period_days,
                     isTrending: books.isTrending,
                     isNewRelease: books.isNewRelease,
+                    is_set: books.is_set,
                     createdAt: books.createdAt,
                     updatedAt: books.updatedAt,
                })

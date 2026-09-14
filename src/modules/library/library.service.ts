@@ -2,6 +2,7 @@ import { db } from '../../db/db';
 import { bookshelves, books, free_candidate_allowed_books, reading_progress } from '../../db/schemas';
 import { eq, and } from 'drizzle-orm';
 import crypto from 'crypto';
+import { get_volumes, type VolumeSummary } from '../../utils/book_sets';
 
 export const library_service = {
      async add_book_to_library(user_id: string, book_id: string) {
@@ -64,12 +65,30 @@ export const library_service = {
                     shelf_name: bookshelves.shelf_name,
                     added_at: bookshelves.added_at,
                     access_period_days: books.access_period_days,
+                    is_set: books.is_set,
+                    set_parent_id: books.set_parent_id,
                })
                .from(bookshelves)
                .innerJoin(books, eq(bookshelves.book_id, books.id))
                .where(eq(bookshelves.user_id, user_id));
 
-          return my_books;
+          // A multi-volume set shows up as ONE entry with its volumes inside.
+          // Shelf rows that belong to a volume (created when a volume is
+          // finished) are folded into their parent rather than listed twice.
+          const set_ids = my_books.filter((b) => b.is_set).map((b) => b.book_id);
+
+          const volumes_by_set: Record<string, VolumeSummary[]> = {};
+          for (const set_id of set_ids) {
+               volumes_by_set[set_id] = await get_volumes(set_id);
+          }
+
+          return my_books
+               .filter((item) => !item.set_parent_id)
+               .map((item) => ({
+                    ...item,
+                    volumes: volumes_by_set[item.book_id] || [],
+                    volume_count: (volumes_by_set[item.book_id] || []).length,
+               }));
      },
 
      async remove_book_from_library(user_id: string, book_id: string) {

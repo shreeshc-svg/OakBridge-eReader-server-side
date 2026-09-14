@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, inArray, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db/db';
 import { books, institutions, users } from '../../db/schemas';
 import { sendNewBooksAnnouncementMail } from '../../utils/mail.service';
@@ -125,6 +125,8 @@ export const mailing_service = {
                     announced_at: books.announced_at,
                })
                .from(books)
+               // Volumes of a set are never announced on their own
+               .where(isNull(books.set_parent_id))
                .orderBy(desc(books.createdAt));
 
           const bookList = await Promise.all(

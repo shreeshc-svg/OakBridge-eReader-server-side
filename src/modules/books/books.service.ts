@@ -13,7 +13,13 @@ import {
      categories,
 } from '../../db/schemas';
 import { db } from '../../db/db';
-import { eq, inArray, and, notInArray, sql, desc } from 'drizzle-orm';
+import { eq, inArray, and, notInArray, isNull, sql, desc } from 'drizzle-orm';
+import {
+     default_volume_label,
+     get_volume_counts,
+     get_volumes,
+     next_volume_number,
+} from '../../utils/book_sets';
 
 const slugify = (text: string): string => {
      return text
@@ -98,6 +104,7 @@ export const books_service = {
                isNewRelease?: boolean;
                cover_image_alt?: string;
                preview_pages_alt?: string | string[];
+               is_set?: boolean;
           },
           files: {
                cover_image?: Express.Multer.File;
@@ -108,7 +115,9 @@ export const books_service = {
            if (!files.cover_image) {
                 throw new Error('Cover image is required');
            }
-           if (!files.book_file) {
+           // A multi-volume set has no file of its own - the readable PDFs are
+           // uploaded afterwards, one per volume.
+           if (!files.book_file && !data.is_set) {
                 throw new Error('Book file is required');
            }
 
@@ -162,21 +171,24 @@ export const books_service = {
                }
           }
 
-          let fileToUpload = files.book_file;
-
-          // DRM Encryption: Encrypt the book file buffer using derived keys
-          const { key, iv } = deriveBookDrmKey(bookId);
-          const encryptedBuffer = encryptBookBuffer(fileToUpload.buffer, key, iv);
-          const encryptedFileToUpload = {
-               ...fileToUpload,
-               buffer: encryptedBuffer,
-          };
-
           // Upload cover image to S3
           const uploadedCover = await upload_to_s3(files.cover_image, 'covers');
 
-          // Upload encrypted book file to S3
-          const uploadedBookFile = await upload_to_s3(encryptedFileToUpload, 'books');
+          // Upload encrypted book file to S3 (a set has none of its own)
+          let book_file_url: string | null = null;
+          if (files.book_file) {
+               const { key, iv } = deriveBookDrmKey(bookId);
+               const encryptedBuffer = encryptBookBuffer(
+                    files.book_file.buffer,
+                    key,
+                    iv
+               );
+               const uploadedBookFile = await upload_to_s3(
+                    { ...files.book_file, buffer: encryptedBuffer },
+                    'books'
+               );
+               book_file_url = uploadedBookFile.url;
+          }
 
           // Upload preview pages to S3
           let preview_pages_urls: string[] = [];
@@ -212,7 +224,8 @@ export const books_service = {
                isbn: data.isbn,
                cover_image_url: uploadedCover.url,
                cover_image_alt: data.cover_image_alt || '',
-               file_url: uploadedBookFile.url,
+               file_url: book_file_url,
+               is_set: data.is_set || false,
                preview_pages: preview_pages_urls,
                preview_pages_alt: previewAlts,
                total_pages: data.total_pages,
@@ -269,12 +282,16 @@ export const books_service = {
                });
           }
 
+          // How many volumes each set has, for the "Set of N volumes" label
+          const volumeCounts = await get_volume_counts(bookIds);
+
           const booksWithPresignedUrls = await Promise.all(
                all_books.map(async (book) => {
                     const mapped = await map_book_with_presigned_urls(book);
                     return {
                          ...mapped,
                          category_ids: categoriesByBook[book.id] || [],
+                         volume_count: volumeCounts[book.id] || 0,
                     };
                })
           );
@@ -297,9 +314,34 @@ export const books_service = {
           const category_ids = associated_categories.map((c) => c.category_id);
 
           const bookWithUrls = await map_book_with_presigned_urls(book);
+
+          // Multi-volume set: list its volumes (page counts, labels, ids) so the
+          // book page can show one specification row per volume and a Read
+          // button per volume. Individual volumes are never listed elsewhere.
+          const volumes = await get_volumes(id);
+
+          // Opening a volume directly: hand back the set it belongs to so the
+          // client can send the reader to the set's page.
+          let parent_set: { id: string; title: string; slug: string } | null = null;
+          if (book.set_parent_id) {
+               const parent = await books_repository.find_book_by_id(
+                    book.set_parent_id
+               );
+               if (parent) {
+                    parent_set = {
+                         id: parent.id,
+                         title: parent.title,
+                         slug: parent.slug,
+                    };
+               }
+          }
+
           return {
                ...bookWithUrls,
                category_ids,
+               volumes,
+               volume_count: volumes.length,
+               parent_set,
           };
      },
 
@@ -455,6 +497,16 @@ export const books_service = {
                .delete(book_categories)
                .where(eq(book_categories.book_id, id));
 
+          // Deleting a set removes its volume rows by FK cascade; their files
+          // have to be cleaned out of S3 here first.
+          const volumes = await get_volumes(id);
+          for (const volume of volumes) {
+               const volume_row = await books_repository.find_book_by_id(volume.id);
+               if (volume_row?.file_url) {
+                    await delete_from_s3(volume_row.file_url);
+               }
+          }
+
           if (existing_book.cover_image_url) {
                await delete_from_s3(existing_book.cover_image_url);
           }
@@ -463,6 +515,195 @@ export const books_service = {
           }
           const deleted_book = await books_repository.delete_book(id);
           return deleted_book;
+     },
+
+     // ── Multi-volume sets ────────────────────────────────────────────────
+
+     /**
+      * Add one volume to a set. Volumes are uploaded one at a time so a large
+      * PDF cannot fail the whole set. A volume inherits the set's ISBN,
+      * description, author, price and categories - it only carries its own
+      * file, page count and position.
+      */
+     async add_volume(
+          set_id: string,
+          data: {
+               volume_number?: number;
+               volume_label?: string;
+               total_pages?: number;
+               total_chapters?: number;
+          },
+          files: {
+               book_file?: Express.Multer.File;
+               cover_image?: Express.Multer.File;
+          }
+     ) {
+          const set = await books_repository.find_book_by_id(set_id);
+          if (!set) {
+               throw new Error('Set not found');
+          }
+          if (set.set_parent_id) {
+               throw new Error('A volume cannot contain volumes of its own');
+          }
+          if (!files.book_file) {
+               throw new Error('Volume file is required');
+          }
+
+          const volumeId = crypto.randomUUID();
+          const volume_number =
+               Number(data.volume_number) > 0
+                    ? Number(data.volume_number)
+                    : await next_volume_number(set_id);
+          const volume_label =
+               data.volume_label?.trim() || default_volume_label(volume_number);
+
+          // Same DRM path as any other book file
+          const { key, iv } = deriveBookDrmKey(volumeId);
+          const encryptedBuffer = encryptBookBuffer(
+               files.book_file.buffer,
+               key,
+               iv
+          );
+          const uploadedFile = await upload_to_s3(
+               { ...files.book_file, buffer: encryptedBuffer },
+               'books'
+          );
+
+          let cover_image_url = set.cover_image_url;
+          if (files.cover_image) {
+               const uploadedCover = await upload_to_s3(
+                    files.cover_image,
+                    'covers'
+               );
+               cover_image_url = uploadedCover.url;
+          }
+
+          const created = await books_repository.create_book({
+               id: volumeId,
+               title: `${set.title} - ${volume_label}`,
+               slug: `${set.slug}-volume-${volume_number}`,
+               description: set.description,
+               uploader_id: set.uploader_id,
+               author: set.author,
+               language: set.language,
+               isbn: set.isbn, // identical across volumes, by design
+               cover_image_url,
+               cover_image_alt: set.cover_image_alt,
+               file_url: uploadedFile.url,
+               preview_pages: [],
+               preview_pages_alt: [],
+               total_pages: Number(data.total_pages || 0),
+               total_chapters: Number(data.total_chapters || 0),
+               price: 0, // never sold on its own
+               access_period_days: set.access_period_days,
+               set_parent_id: set_id,
+               volume_number,
+               volume_label,
+               is_set: false,
+               createdAt: new Date(),
+               updatedAt: new Date(),
+          });
+
+          // Make sure the parent is flagged as a set now that it has volumes
+          if (!set.is_set) {
+               await books_repository.update_book(set_id, {
+                    is_set: true,
+                    updatedAt: new Date(),
+               });
+          }
+
+          return created;
+     },
+
+     async update_volume(
+          volume_id: string,
+          data: {
+               volume_number?: number;
+               volume_label?: string;
+               total_pages?: number;
+               total_chapters?: number;
+          },
+          files?: { book_file?: Express.Multer.File }
+     ) {
+          const volume = await books_repository.find_book_by_id(volume_id);
+          if (!volume || !volume.set_parent_id) {
+               throw new Error('Volume not found');
+          }
+
+          const updateData: any = { updatedAt: new Date() };
+
+          if (data.volume_number !== undefined && Number(data.volume_number) > 0) {
+               updateData.volume_number = Number(data.volume_number);
+          }
+          if (data.volume_label !== undefined && data.volume_label.trim()) {
+               updateData.volume_label = data.volume_label.trim();
+          }
+          if (data.total_pages !== undefined) {
+               updateData.total_pages = Number(data.total_pages || 0);
+          }
+          if (data.total_chapters !== undefined) {
+               updateData.total_chapters = Number(data.total_chapters || 0);
+          }
+
+          const label = updateData.volume_label || volume.volume_label;
+          const number = updateData.volume_number || volume.volume_number;
+          if (label) {
+               const set = await books_repository.find_book_by_id(
+                    volume.set_parent_id
+               );
+               if (set) {
+                    updateData.title = `${set.title} - ${label}`;
+                    updateData.slug = `${set.slug}-volume-${number}`;
+               }
+          }
+
+          // Replacing the PDF keeps the same book id, so the DRM key still matches
+          if (files?.book_file) {
+               if (volume.file_url) {
+                    await delete_from_s3(volume.file_url);
+               }
+               const { key, iv } = deriveBookDrmKey(volume_id);
+               const encryptedBuffer = encryptBookBuffer(
+                    files.book_file.buffer,
+                    key,
+                    iv
+               );
+               const uploaded = await upload_to_s3(
+                    { ...files.book_file, buffer: encryptedBuffer },
+                    'books'
+               );
+               updateData.file_url = uploaded.url;
+          }
+
+          return books_repository.update_book(volume_id, updateData);
+     },
+
+     async delete_volume(volume_id: string) {
+          const volume = await books_repository.find_book_by_id(volume_id);
+          if (!volume || !volume.set_parent_id) {
+               throw new Error('Volume not found');
+          }
+          if (volume.file_url) {
+               await delete_from_s3(volume.file_url);
+          }
+          return books_repository.delete_book(volume_id);
+     },
+
+     /** Reorder volumes; `volume_ids` is the new order, first to last. */
+     async reorder_volumes(set_id: string, volume_ids: string[]) {
+          const volumes = await get_volumes(set_id);
+          const known = new Set(volumes.map((v) => v.id));
+
+          let position = 0;
+          for (const id of volume_ids) {
+               if (!known.has(id)) continue;
+               position += 1;
+               await books_repository.update_book(id, {
+                    volume_number: position,
+                    updatedAt: new Date(),
+               });
+          }
+          return get_volumes(set_id);
      },
 
      async get_recommendations(userId: string) {
@@ -560,7 +801,12 @@ export const books_service = {
                          book_categories,
                          eq(books.id, book_categories.book_id)
                     )
-                    .where(notInArray(books.id, interactedBookIds))
+                    .where(
+                         and(
+                              notInArray(books.id, interactedBookIds),
+                              isNull(books.set_parent_id)
+                         )
+                    )
                     .groupBy(books.id)
                     .orderBy(
                          desc(titleSimilarityExpr),
@@ -580,11 +826,14 @@ export const books_service = {
                const fillCount = 6 - recommendedList.length;
 
                let query = db.select().from(books);
-               if (excludedIds.length > 0) {
-                    query = query.where(
-                         notInArray(books.id, excludedIds)
-                    ) as typeof query;
-               }
+               query = query.where(
+                    excludedIds.length > 0
+                         ? and(
+                              notInArray(books.id, excludedIds),
+                              isNull(books.set_parent_id)
+                         )
+                         : isNull(books.set_parent_id)
+               ) as typeof query;
                const fillers = await query.limit(fillCount);
                recommendedList.push(...fillers);
           }

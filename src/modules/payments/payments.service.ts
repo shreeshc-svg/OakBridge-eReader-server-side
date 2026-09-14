@@ -29,6 +29,13 @@ export const payments_service = {
                throw new Error('Book not found');
           }
 
+          // Volumes of a multi-volume set are never sold separately
+          if (book.set_parent_id) {
+               throw new Error(
+                    'This volume is part of a set and can only be bought as the complete set'
+               );
+          }
+
           if (!book.price || book.price <= 0) {
                throw new Error('Book is free, no payment required');
           }
@@ -103,6 +110,11 @@ export const payments_service = {
 
           // Calculate total amount
           const totalAmount = bookRows.reduce((sum, book) => {
+               if (book.set_parent_id) {
+                    throw new Error(
+                         `"${book.title}" is a volume of a set and can only be bought as the complete set`
+                    );
+               }
                if (!book.price || book.price <= 0) {
                     throw new Error(`Book "${book.title}" is free and cannot be added to a paid cart order`);
                }

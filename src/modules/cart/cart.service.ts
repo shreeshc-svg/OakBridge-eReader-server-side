@@ -47,6 +47,23 @@ export const cart_service = {
      },
 
      async add_to_cart(userId: string, bookId: string) {
+          // A volume of a multi-volume set is never sold on its own - only the
+          // set itself can be bought.
+          const [book] = await db
+               .select({ set_parent_id: books.set_parent_id })
+               .from(books)
+               .where(eq(books.id, bookId))
+               .limit(1);
+
+          if (!book) {
+               throw new Error('Book not found');
+          }
+          if (book.set_parent_id) {
+               throw new Error(
+                    'This volume is part of a set and can only be bought as the complete set'
+               );
+          }
+
           // Check if item already exists in cart
           const existing = await db
                .select()
