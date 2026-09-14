@@ -58,6 +58,43 @@ router.put(
      books_controller.update_book
 );
 
+// ── Multi-volume sets ────────────────────────────────────────────────────
+// Volumes are uploaded one at a time, so a large PDF cannot fail the whole set.
+const volumeUploadFields = upload.fields([
+     { name: 'book_file', maxCount: 1 },
+     { name: 'cover_image', maxCount: 1 },
+]);
+
+router.post(
+     '/:id/volumes',
+     authenticate,
+     check_role(['SUPERADMIN', 'ADMIN']),
+     volumeUploadFields,
+     books_controller.add_volume
+);
+
+router.put(
+     '/volumes/:id',
+     authenticate,
+     check_role(['SUPERADMIN', 'ADMIN']),
+     volumeUploadFields,
+     books_controller.update_volume
+);
+
+router.delete(
+     '/volumes/:id',
+     authenticate,
+     check_role(['SUPERADMIN', 'ADMIN']),
+     books_controller.delete_volume
+);
+
+router.put(
+     '/:id/volumes/order',
+     authenticate,
+     check_role(['SUPERADMIN', 'ADMIN']),
+     books_controller.reorder_volumes
+);
+
 // Route to delete a book (Only SUPERADMIN can delete books)
 router.delete(
      '/delete-book',

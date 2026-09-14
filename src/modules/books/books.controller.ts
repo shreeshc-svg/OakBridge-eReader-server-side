@@ -11,6 +11,7 @@ import { hasActiveInstitutionSubscription } from '../../utils/subscription.helpe
 import { deriveBookDrmKey } from '../../utils/drm';
 import { get_preview_key_from_url, get_presigned_url } from '../../utils/s3';
 import { book_categories, institution_allowed_categories, institution_allowed_books, users } from '../../db/schemas';
+import { entitlement_book_id } from '../../utils/book_sets';
 
 export async function checkBookAllowedBatch(
      userId: string | undefined,
@@ -108,8 +109,12 @@ export async function checkBookAllowedBatch(
      return resultMap;
 }
 
-export async function isBookAllowedForUser(userId: string | undefined, bookId: string): Promise<boolean> {
+export async function isBookAllowedForUser(userId: string | undefined, rawBookId: string): Promise<boolean> {
      if (!userId) return true;
+
+     // Category rules and free-candidate grants are held against the set, so a
+     // volume is judged by its parent.
+     const bookId = await entitlement_book_id(rawBookId);
 
      const [user] = await db
           .select({ institution_id: users.institution_id, role: users.role, is_free_candidate: users.is_free_candidate })
@@ -195,17 +200,23 @@ export const books_controller = {
                const book_file = files?.book_file?.[0];
                const preview_pages = files?.preview_pages || [];
 
+               // A multi-volume set carries no file of its own - its volumes are
+               // uploaded one at a time afterwards.
+               const is_set =
+                    req.body.is_set === 'true' || req.body.is_set === true;
+
                if (!cover_image) {
                     return res
                          .status(400)
                          .json({ message: 'Cover image file is required' });
                }
-               if (!book_file) {
+               if (!book_file && !is_set) {
                     return res
                          .status(400)
                          .json({ message: 'Book ebook file is required' });
                }
                if (
+                    book_file &&
                     book_file.mimetype !== 'application/pdf' &&
                     !book_file.originalname.toLowerCase().endsWith('.pdf')
                ) {
@@ -289,6 +300,7 @@ export const books_controller = {
                          category_names: parsed_category_names,
                          isTrending: parsed_is_trending,
                          isNewRelease: parsed_is_new_release,
+                         is_set,
                     },
                     { cover_image, book_file, preview_pages }
                );
@@ -572,9 +584,11 @@ export const books_controller = {
 
                const book = await books_service.get_book_by_id(id);
                if (!book || !book.file_url) {
-                    return res
-                         .status(404)
-                         .json({ message: 'Book or file not found' });
+                    return res.status(404).json({
+                         message: book?.is_set
+                              ? 'This is a multi-volume set. Open one of its volumes instead.'
+                              : 'Book or file not found',
+                    });
                }
 
                // Security check: Verify library access / subscription for reading
@@ -586,6 +600,14 @@ export const books_controller = {
                          .json({ message: 'Unauthorized' });
                }
 
+               // A volume is read through the entitlement of the set it belongs
+               // to: the purchase, shelf row and access period all sit there.
+               const entitlementId = await entitlement_book_id(id);
+               const entitlementBook =
+                    entitlementId === id
+                         ? book
+                         : await books_service.get_book_by_id(entitlementId);
+
                // Bypass library check if the user is a SUPERADMIN
                if (userRole !== 'SUPERADMIN') {
                     // Check if they are a free candidate for this book
@@ -595,7 +617,7 @@ export const books_controller = {
                          .where(
                               and(
                                    eq(free_candidate_allowed_books.user_id, userId),
-                                   eq(free_candidate_allowed_books.book_id, id)
+                                   eq(free_candidate_allowed_books.book_id, entitlementId)
                               )
                          )
                          .limit(1);
@@ -611,7 +633,7 @@ export const books_controller = {
                                    .where(
                                         and(
                                              eq(bookshelves.user_id, userId),
-                                             eq(bookshelves.book_id, id)
+                                             eq(bookshelves.book_id, entitlementId)
                                         )
                                    )
                                    .limit(1);
@@ -623,9 +645,9 @@ export const books_controller = {
                               }
 
                               // Check access expiration
-                              if (book.access_period_days && book.access_period_days > 0) {
+                              if (entitlementBook?.access_period_days && entitlementBook.access_period_days > 0) {
                                    const addedAt = new Date(existingShelf[0].added_at);
-                                   const expirationDate = new Date(addedAt.getTime() + book.access_period_days * 24 * 60 * 60 * 1000);
+                                   const expirationDate = new Date(addedAt.getTime() + entitlementBook.access_period_days * 24 * 60 * 60 * 1000);
                                    if (new Date() > expirationDate) {
                                         return res.status(403).json({
                                              message: 'Forbidden: Your access to this book has expired.',
@@ -722,6 +744,13 @@ export const books_controller = {
                          .json({ message: 'Unauthorized' });
                }
 
+               // A volume is read through the entitlement of its parent set.
+               const entitlementId = await entitlement_book_id(id);
+               const entitlementBook =
+                    entitlementId === id
+                         ? book
+                         : await books_service.get_book_by_id(entitlementId);
+
                if (userRole !== 'SUPERADMIN') {
                     // Check if they are a free candidate for this book
                     const [freeAccessRecord] = await db
@@ -730,7 +759,7 @@ export const books_controller = {
                          .where(
                               and(
                                    eq(free_candidate_allowed_books.user_id, userId),
-                                   eq(free_candidate_allowed_books.book_id, id)
+                                   eq(free_candidate_allowed_books.book_id, entitlementId)
                               )
                          )
                          .limit(1);
@@ -746,7 +775,7 @@ export const books_controller = {
                                    .where(
                                         and(
                                              eq(bookshelves.user_id, userId),
-                                             eq(bookshelves.book_id, id)
+                                             eq(bookshelves.book_id, entitlementId)
                                         )
                                    )
                                    .limit(1);
@@ -758,9 +787,9 @@ export const books_controller = {
                               }
 
                               // Check access expiration
-                              if (book.access_period_days && book.access_period_days > 0) {
+                              if (entitlementBook?.access_period_days && entitlementBook.access_period_days > 0) {
                                    const addedAt = new Date(existingShelf[0].added_at);
-                                   const expirationDate = new Date(addedAt.getTime() + book.access_period_days * 24 * 60 * 60 * 1000);
+                                   const expirationDate = new Date(addedAt.getTime() + entitlementBook.access_period_days * 24 * 60 * 60 * 1000);
                                    if (new Date() > expirationDate) {
                                         return res.status(403).json({
                                              message: 'Forbidden: Your access to this book has expired.',
@@ -828,6 +857,132 @@ export const books_controller = {
                     return res.status(500).json({ message: 'Failed to load preview file' });
                }
                res.end();
+          }
+     },
+
+     // ── Multi-volume sets ────────────────────────────────────────────────
+
+     /** Add one volume to a set (uploaded one at a time from the admin form). */
+     async add_volume(req: Request, res: Response): Promise<any> {
+          try {
+               const set_id = req.params.id;
+               const files = req.files as {
+                    [fieldname: string]: Express.Multer.File[];
+               };
+               const book_file = files?.book_file?.[0];
+               const cover_image = files?.cover_image?.[0];
+
+               if (!book_file) {
+                    return res
+                         .status(400)
+                         .json({ message: 'Volume PDF is required' });
+               }
+               if (
+                    book_file.mimetype !== 'application/pdf' &&
+                    !book_file.originalname.toLowerCase().endsWith('.pdf')
+               ) {
+                    return res
+                         .status(400)
+                         .json({ message: 'Only PDF files are allowed' });
+               }
+
+               const volume = await books_service.add_volume(
+                    set_id,
+                    {
+                         volume_number: req.body.volume_number
+                              ? Number(req.body.volume_number)
+                              : undefined,
+                         volume_label: req.body.volume_label,
+                         total_pages: Number(req.body.total_pages || 0),
+                         total_chapters: Number(req.body.total_chapters || 0),
+                    },
+                    { book_file, cover_image }
+               );
+
+               return res.status(201).json({
+                    message: 'Volume added successfully',
+                    data: volume,
+               });
+          } catch (error: any) {
+               return res.status(400).json({
+                    message: error.message || 'Failed to add volume',
+               });
+          }
+     },
+
+     async update_volume(req: Request, res: Response): Promise<any> {
+          try {
+               const files = req.files as {
+                    [fieldname: string]: Express.Multer.File[];
+               };
+               const book_file = files?.book_file?.[0];
+
+               const volume = await books_service.update_volume(
+                    req.params.id,
+                    {
+                         volume_number: req.body.volume_number
+                              ? Number(req.body.volume_number)
+                              : undefined,
+                         volume_label: req.body.volume_label,
+                         total_pages:
+                              req.body.total_pages !== undefined
+                                   ? Number(req.body.total_pages)
+                                   : undefined,
+                         total_chapters:
+                              req.body.total_chapters !== undefined
+                                   ? Number(req.body.total_chapters)
+                                   : undefined,
+                    },
+                    { book_file }
+               );
+
+               return res.status(200).json({
+                    message: 'Volume updated successfully',
+                    data: volume,
+               });
+          } catch (error: any) {
+               return res.status(400).json({
+                    message: error.message || 'Failed to update volume',
+               });
+          }
+     },
+
+     async delete_volume(req: Request, res: Response): Promise<any> {
+          try {
+               await books_service.delete_volume(req.params.id);
+               return res
+                    .status(200)
+                    .json({ message: 'Volume deleted successfully' });
+          } catch (error: any) {
+               return res.status(400).json({
+                    message: error.message || 'Failed to delete volume',
+               });
+          }
+     },
+
+     async reorder_volumes(req: Request, res: Response): Promise<any> {
+          try {
+               const volume_ids = Array.isArray(req.body.volume_ids)
+                    ? req.body.volume_ids
+                    : [];
+               if (volume_ids.length === 0) {
+                    return res
+                         .status(400)
+                         .json({ message: 'volume_ids is required' });
+               }
+
+               const volumes = await books_service.reorder_volumes(
+                    req.params.id,
+                    volume_ids
+               );
+               return res.status(200).json({
+                    message: 'Volumes reordered successfully',
+                    data: volumes,
+               });
+          } catch (error: any) {
+               return res.status(400).json({
+                    message: error.message || 'Failed to reorder volumes',
+               });
           }
      },
 };

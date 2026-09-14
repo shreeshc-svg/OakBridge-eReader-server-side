@@ -12,6 +12,7 @@ import {
      free_candidate_allowed_books,
 } from '../../db/schemas';
 import { hasActiveInstitutionSubscription } from '../../utils/subscription.helper';
+import { entitlement_book_id } from '../../utils/book_sets';
 
 import crypto from 'crypto';
 
@@ -19,11 +20,14 @@ import crypto from 'crypto';
  * Whether a user is entitled to have this book on their shelf.
  * Mirrors the rules used by POST /api/library/add: free books, books a free
  * candidate has been granted, institution subscribers, or a completed purchase.
+ * A volume of a multi-volume set is judged by its parent set.
  */
 async function canUserShelveBook(
      user_id: string,
-     book_id: string
+     raw_book_id: string
 ): Promise<boolean> {
+     const book_id = await entitlement_book_id(raw_book_id);
+
      const [book] = await db
           .select({ price: books.price })
           .from(books)
