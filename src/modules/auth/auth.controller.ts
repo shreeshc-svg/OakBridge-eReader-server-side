@@ -504,6 +504,7 @@ export const auth_controller = {
                     billing_postal_code,
                     billing_country,
                     marketing_emails,
+                    book_notifications,
                } = req.body;
 
                const updatedUser = await auth_service.update_profile(userId, {
@@ -517,6 +518,7 @@ export const auth_controller = {
                     billing_postal_code,
                     billing_country,
                     marketing_emails,
+                    book_notifications,
                });
 
                return res.status(200).json({

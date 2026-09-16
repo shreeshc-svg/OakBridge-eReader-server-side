@@ -32,6 +32,8 @@ export const users = pgTable('users', {
      is_free_candidate: boolean('is_free_candidate').notNull().default(false),
      // false once the user unsubscribes from marketing emails (new books, reminders)
      marketing_emails: boolean('marketing_emails').notNull().default(true),
+     // false once the user turns off "new book added" alerts (in-app + email)
+     book_notifications: boolean('book_notifications').notNull().default(true),
      billing_address_line1: varchar('billing_address_line1', { length: 255 }),
      billing_address_line2: varchar('billing_address_line2', { length: 255 }),
      billing_city: varchar('billing_city', { length: 100 }),

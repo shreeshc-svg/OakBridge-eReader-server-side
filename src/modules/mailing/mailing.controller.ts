@@ -85,6 +85,7 @@ export const mailing_controller = {
                const data = await mailing_service.update_automatic({
                     inactivity_reminders: req.body?.inactivity_reminders,
                     cart_reminders: req.body?.cart_reminders,
+                    new_book_notifications: req.body?.new_book_notifications,
                });
                return res.status(200).json({ success: true, data });
           } catch (error: any) {
