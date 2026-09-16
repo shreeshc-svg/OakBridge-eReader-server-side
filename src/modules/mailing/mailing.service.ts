@@ -173,10 +173,12 @@ export const mailing_service = {
                .groupBy(institutions.id, institutions.name)
                .orderBy(institutions.name);
 
-          const [inactivity_reminders, cart_reminders] = await Promise.all([
-               isEmailSettingEnabled(EMAIL_SETTING_KEYS.inactivity_reminders),
-               isEmailSettingEnabled(EMAIL_SETTING_KEYS.cart_reminders),
-          ]);
+          const [inactivity_reminders, cart_reminders, new_book_notifications] =
+               await Promise.all([
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.inactivity_reminders),
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.cart_reminders),
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.new_book_notifications),
+               ]);
 
           return {
                books: bookList,
@@ -190,7 +192,11 @@ export const mailing_service = {
                     ...i,
                     members: Number(i.members),
                })),
-               automatic: { inactivity_reminders, cart_reminders },
+               automatic: {
+                    inactivity_reminders,
+                    cart_reminders,
+                    new_book_notifications,
+               },
                max_books_per_email: MAX_BOOKS_PER_EMAIL,
           };
      },
@@ -348,6 +354,7 @@ export const mailing_service = {
      async update_automatic(settings: {
           inactivity_reminders?: boolean;
           cart_reminders?: boolean;
+          new_book_notifications?: boolean;
      }) {
           if (typeof settings.inactivity_reminders === 'boolean') {
                await settings_service.update_setting(
@@ -361,11 +368,19 @@ export const mailing_service = {
                     settings.cart_reminders ? 'true' : 'false'
                );
           }
-          const [inactivity_reminders, cart_reminders] = await Promise.all([
-               isEmailSettingEnabled(EMAIL_SETTING_KEYS.inactivity_reminders),
-               isEmailSettingEnabled(EMAIL_SETTING_KEYS.cart_reminders),
-          ]);
-          return { inactivity_reminders, cart_reminders };
+          if (typeof settings.new_book_notifications === 'boolean') {
+               await settings_service.update_setting(
+                    EMAIL_SETTING_KEYS.new_book_notifications,
+                    settings.new_book_notifications ? 'true' : 'false'
+               );
+          }
+          const [inactivity_reminders, cart_reminders, new_book_notifications] =
+               await Promise.all([
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.inactivity_reminders),
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.cart_reminders),
+                    isEmailSettingEnabled(EMAIL_SETTING_KEYS.new_book_notifications),
+               ]);
+          return { inactivity_reminders, cart_reminders, new_book_notifications };
      },
 
      /** Called from the unsubscribe link in emails. */

@@ -216,6 +216,9 @@ export const sendInactivityReminderMail = async (
      });
 };
 
+// GUARDED: nothing calls this today. If a new-book email is ever wired
+// up again it must go through canSendNewBookAlert() first, so the
+// superadmin switch and the per-user opt-out both hold it shut.
 export const sendBookAdvertisementMail = async (
      email: string,
      username: string,
@@ -276,6 +279,9 @@ export const sendBookAdvertisementMail = async (
      });
 };
 
+// GUARDED: nothing calls this today. If a new-book email is ever wired
+// up again it must go through canSendNewBookAlert() first, so the
+// superadmin switch and the per-user opt-out both hold it shut.
 export const sendFreeBookAdvertisementMail = async (
      email: string,
      username: string,

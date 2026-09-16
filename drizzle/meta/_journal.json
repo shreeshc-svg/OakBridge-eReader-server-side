@@ -330,6 +330,13 @@
       "when": 1789718400000,
       "tag": "0046_volume_sets",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789891200000,
+      "tag": "0047_book_notification_toggle",
+      "breakpoints": true
     }
   ]
 }

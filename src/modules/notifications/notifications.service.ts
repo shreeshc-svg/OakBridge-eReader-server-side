@@ -3,6 +3,10 @@ import { db } from '../../db/db';
 import { users } from '../../db/schemas';
 import { and, ne, eq } from 'drizzle-orm';
 import crypto from 'crypto';
+import {
+     EMAIL_SETTING_KEYS,
+     isEmailSettingEnabled,
+} from '../../utils/email_settings';
 
 export const notifications_service = {
      async get_user_notifications(userId: string) {
@@ -19,14 +23,23 @@ export const notifications_service = {
 
      async notify_new_book(bookTitle: string) {
           try {
-               // Get all users who are not superadmins or admins
+               // Global switch: superadmin can stop every "new book" alert
+               // (Dashboard -> Email Updates -> Automatic messages).
+               const enabled = await isEmailSettingEnabled(
+                    EMAIL_SETTING_KEYS.new_book_notifications
+               );
+               if (!enabled) return;
+
+               // Everyone who is not a superadmin or admin and has not turned
+               // new-book alerts off in their profile.
                const targetUsers = await db
                     .select({ id: users.id })
                     .from(users)
                     .where(
                          and(
                               ne(users.role, 'SUPERADMIN'),
-                              ne(users.role, 'ADMIN')
+                              ne(users.role, 'ADMIN'),
+                              eq(users.book_notifications, true)
                          )
                     );
 
