@@ -871,7 +871,8 @@ export const books_controller = {
      /** Add one volume to a set (uploaded one at a time from the admin form). */
      async add_volume(req: Request, res: Response): Promise<any> {
           try {
-               const set_id = req.params.id;
+               // Express 5 types route params loosely; normalise to a string.
+               const set_id = String(req.params.id);
                const files = req.files as {
                     [fieldname: string]: Express.Multer.File[];
                };
@@ -924,7 +925,7 @@ export const books_controller = {
                const book_file = files?.book_file?.[0];
 
                const volume = await books_service.update_volume(
-                    req.params.id,
+                    String(req.params.id),
                     {
                          volume_number: req.body.volume_number
                               ? Number(req.body.volume_number)
@@ -955,7 +956,7 @@ export const books_controller = {
 
      async delete_volume(req: Request, res: Response): Promise<any> {
           try {
-               await books_service.delete_volume(req.params.id);
+               await books_service.delete_volume(String(req.params.id));
                return res
                     .status(200)
                     .json({ message: 'Volume deleted successfully' });
@@ -978,7 +979,7 @@ export const books_controller = {
                }
 
                const volumes = await books_service.reorder_volumes(
-                    req.params.id,
+                    String(req.params.id),
                     volume_ids
                );
                return res.status(200).json({

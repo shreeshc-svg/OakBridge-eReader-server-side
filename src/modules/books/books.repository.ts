@@ -93,7 +93,10 @@ export const books_repository = {
                }
 
                if (bookConditions.length > 0) {
-                    conditions.push(or(...bookConditions));
+                    // or() is typed as possibly undefined, and `conditions` is
+                    // now a typed SQL array because of the volume filter.
+                    const combined = or(...bookConditions);
+                    if (combined) conditions.push(combined);
                } else {
                     conditions.push(eq(books.id, '00000000-0000-0000-0000-000000000000'));
                }
