@@ -39,6 +39,7 @@ router.get('/free-candidates', check_role(['SUPERADMIN']), superadminController.
 router.post('/free-candidates', check_role(['SUPERADMIN']), superadminController.createFreeCandidate);
 router.get('/free-candidates/:id/allowed-books', check_role(['SUPERADMIN']), superadminController.getFreeCandidateAllowedBooks);
 router.post('/free-candidates/:id/allowed-books', check_role(['SUPERADMIN']), superadminController.updateFreeCandidateAllowedBooks);
+router.delete('/free-candidates/:id', check_role(['SUPERADMIN']), superadminController.deleteFreeCandidate);
 
 // Coupon management routes (SUPERADMIN role only)
 router.get('/coupons', check_role(['SUPERADMIN']), superadminController.getCoupons);
