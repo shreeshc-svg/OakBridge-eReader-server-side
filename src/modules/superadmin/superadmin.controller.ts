@@ -748,3 +748,26 @@ export async function deleteCoupon(req: Request, res: Response): Promise<any> {
           });
      }
 }
+
+export async function deleteFreeCandidate(req: Request, res: Response): Promise<any> {
+     try {
+          const id = req.params.id as string;
+          if (!id) {
+               return res.status(400).json({
+                    success: false,
+                    message: 'Candidate User ID is required',
+               });
+          }
+
+          await superadminService.deleteFreeCandidate(id);
+          return res.status(200).json({
+               success: true,
+               message: 'Free candidate deleted successfully',
+          });
+     } catch (error: any) {
+          return res.status(400).json({
+               success: false,
+               message: error.message || 'Failed to delete free candidate',
+          });
+     }
+}

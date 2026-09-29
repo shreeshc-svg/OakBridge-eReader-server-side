@@ -1091,3 +1091,42 @@ export async function deleteCoupon(id: string) {
           throw error;
      }
 }
+
+// Delete a free candidate account outright.
+// Everything owned by that user cascades away (granted books, shelf, progress,
+// bookmarks, highlights, notifications, cart, reviews, payments). The books
+// themselves are untouched — this revokes one person's access, nothing more.
+export async function deleteFreeCandidate(userId: string) {
+     const [candidate] = await db
+          .select({ id: users.id, is_free_candidate: users.is_free_candidate, role: users.role })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+
+     if (!candidate) {
+          throw new Error('Candidate not found');
+     }
+     if (!candidate.is_free_candidate) {
+          throw new Error('This user is not a free candidate');
+     }
+
+     // books.uploader_id cascades on user delete, so an account that uploaded
+     // anything must never be removed this way.
+     const [{ value: uploaded }] = await db
+          .select({ value: count() })
+          .from(books)
+          .where(eq(books.uploader_id, userId));
+
+     if (Number(uploaded) > 0) {
+          throw new Error(
+               `This account uploaded ${uploaded} book(s) and cannot be deleted — deleting it would delete those books`
+          );
+     }
+
+     const [deleted] = await db
+          .delete(users)
+          .where(eq(users.id, userId))
+          .returning({ id: users.id });
+
+     return !!deleted;
+}
