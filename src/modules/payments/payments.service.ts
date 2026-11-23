@@ -412,7 +412,7 @@ export const payments_service = {
                     const pdfBuffer = await generateInvoicePDF({
                          invoiceNo: `OAK-2026-27-${payment.id.substring(0, 4).toUpperCase()}`,
                          date: formattedDate,
-                         orderNo: razorpay_order_id,
+                         orderNo: payment.razorpay_order_id,
                          paymentRef: payment.id,
                          buyerName: user.username || 'Reader',
                          shippingAddress: payment.shippingAddress || undefined,
