@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
 import * as superadminService from './superadmin.service';
+import { payments_service } from '../payments/payments.service';
+import { reconcilePendingPayments } from '../../utils/payment_reconcile.job';
+import { logActivity } from '../../utils/audit_logger';
 import * as reportsService from './reports.service';
 import { sendWelcomeMail, send_contact_notification_mail } from '../../utils/mail.service';
 
@@ -768,6 +771,149 @@ export async function deleteFreeCandidate(req: Request, res: Response): Promise<
           return res.status(400).json({
                success: false,
                message: error.message || 'Failed to delete free candidate',
+          });
+     }
+}
+
+// ── Customers ────────────────────────────────────────────────────────────────
+
+export async function getCustomers(req: Request, res: Response): Promise<any> {
+     try {
+          const data = await superadminService.getCustomers({
+               page: Number(req.query.page) || 1,
+               limit: Number(req.query.limit) || 25,
+               search: String(req.query.search || ''),
+          });
+          return res.status(200).json({ success: true, data });
+     } catch (error: any) {
+          return res.status(500).json({
+               success: false,
+               message: error.message || 'Failed to load customers',
+          });
+     }
+}
+
+export async function getCustomerDetail(req: Request, res: Response): Promise<any> {
+     try {
+          const data = await superadminService.getCustomerDetail(String(req.params.id));
+          return res.status(200).json({ success: true, data });
+     } catch (error: any) {
+          return res.status(404).json({
+               success: false,
+               message: error.message || 'Customer not found',
+          });
+     }
+}
+
+export async function updateCustomer(req: Request, res: Response): Promise<any> {
+     try {
+          const data = await superadminService.updateCustomer(
+               String(req.params.id),
+               req.body || {}
+          );
+          return res.status(200).json({
+               success: true,
+               message: 'Customer updated successfully',
+               data,
+          });
+     } catch (error: any) {
+          return res.status(400).json({
+               success: false,
+               message: error.message || 'Failed to update customer',
+          });
+     }
+}
+
+export async function deleteCustomer(req: Request, res: Response): Promise<any> {
+     try {
+          await superadminService.deleteCustomer(String(req.params.id));
+          return res.status(200).json({
+               success: true,
+               message: 'Customer deleted successfully',
+          });
+     } catch (error: any) {
+          return res.status(400).json({
+               success: false,
+               message: error.message || 'Failed to delete customer',
+          });
+     }
+}
+
+export async function grantBookToCustomer(req: Request, res: Response): Promise<any> {
+     try {
+          const adminId = (req as any).user?.id;
+          const { bookId, note } = req.body || {};
+
+          if (!bookId) {
+               return res.status(400).json({ success: false, message: 'bookId is required' });
+          }
+
+          const result = await superadminService.grantBookToCustomer(
+               String(req.params.id),
+               String(bookId),
+               adminId,
+               note
+          );
+
+          return res.status(200).json({
+               success: true,
+               message: result.alreadyOwned
+                    ? `Customer already has "${result.title}"`
+                    : `"${result.title}" issued to the customer`,
+               data: result,
+          });
+     } catch (error: any) {
+          return res.status(400).json({
+               success: false,
+               message: error.message || 'Failed to issue the book',
+          });
+     }
+}
+
+/**
+ * Fulfil an order that Razorpay captured but we never completed — the same
+ * code path a successful checkout runs, so the buyer gets the book, the
+ * invoice and the receipt email.
+ */
+export async function fulfilOrder(req: Request, res: Response): Promise<any> {
+     try {
+          const adminId = (req as any).user?.id;
+          const paymentId = String(req.params.id);
+
+          const payment = await payments_service.fulfil_payment(paymentId, {
+               razorpay_payment_id: req.body?.razorpay_payment_id,
+               source: 'admin',
+               force: req.body?.force === true,
+          });
+
+          await logActivity(adminId, null, 'ADMIN_FULFIL_PAYMENT', { paymentId });
+
+          return res.status(200).json({
+               success: true,
+               message: 'Order fulfilled',
+               data: payment,
+          });
+     } catch (error: any) {
+          return res.status(400).json({
+               success: false,
+               message: error.message || 'Failed to fulfil the order',
+          });
+     }
+}
+
+/** Payments Razorpay captured but we never recorded — the repair queue. */
+export async function runPaymentReconcile(req: Request, res: Response): Promise<any> {
+     try {
+          const result = await reconcilePendingPayments();
+          return res.status(200).json({
+               success: true,
+               message: `Checked ${result.checked} pending order(s), repaired ${result.repaired}.`,
+               data: result,
+          });
+     } catch (error: any) {
+          return res.status(500).json({
+               success: false,
+               message: error.message || 'Reconcile run failed',
           });
      }
 }
