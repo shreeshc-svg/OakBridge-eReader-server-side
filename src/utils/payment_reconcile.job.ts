@@ -18,10 +18,22 @@ import { payments_service } from '../modules/payments/payments.service';
 const STUCK_AFTER_MINUTES = 10;
 const MAX_AGE_DAYS = 7;
 
-const razorpay = new Razorpay({
-     key_id: process.env.RAZORPAY_KEY_ID || '',
-     key_secret: process.env.RAZORPAY_KEY_SECRET || '',
-});
+// Built on demand, never at import time: the SDK throws when the keys are
+// absent, and that would stop the whole server from booting.
+let razorpayClient: Razorpay | null = null;
+
+const getRazorpay = (): Razorpay | null => {
+     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+          return null;
+     }
+     if (!razorpayClient) {
+          razorpayClient = new Razorpay({
+               key_id: process.env.RAZORPAY_KEY_ID,
+               key_secret: process.env.RAZORPAY_KEY_SECRET,
+          });
+     }
+     return razorpayClient;
+};
 
 /** Verify a Razorpay webhook body against the configured webhook secret. */
 export const verifyWebhookSignature = (
@@ -45,7 +57,8 @@ export const reconcilePendingPayments = async (): Promise<{
      checked: number;
      repaired: number;
 }> => {
-     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+     const razorpay = getRazorpay();
+     if (!razorpay) {
           console.warn('[RECONCILE] Razorpay keys missing - skipping run.');
           return { checked: 0, repaired: 0 };
      }
