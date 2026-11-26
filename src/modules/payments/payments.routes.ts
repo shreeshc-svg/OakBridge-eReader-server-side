@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { payments_controller } from './payments.controller';
 import { getActiveSubscriptionPlans } from '../superadmin/superadmin.controller';
@@ -8,6 +8,14 @@ const router = Router();
 router.post('/create-order', authenticate, payments_controller.create_order);
 router.post('/create-cart-order', authenticate, payments_controller.create_cart_order);
 router.post('/verify', authenticate, payments_controller.verify_payment);
+
+// Razorpay -> us, server to server. No auth (signed with the webhook secret),
+// and a raw body so the signature is checked against the exact bytes sent.
+router.post(
+     '/webhook',
+     express.raw({ type: '*/*', limit: '2mb' }),
+     payments_controller.razorpay_webhook
+);
 router.get('/coupon/validate', authenticate, payments_controller.validate_coupon);
 router.post(
      '/subscribe',

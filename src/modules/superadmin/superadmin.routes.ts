@@ -41,6 +41,17 @@ router.get('/free-candidates/:id/allowed-books', check_role(['SUPERADMIN']), sup
 router.post('/free-candidates/:id/allowed-books', check_role(['SUPERADMIN']), superadminController.updateFreeCandidateAllowedBooks);
 router.delete('/free-candidates/:id', check_role(['SUPERADMIN']), superadminController.deleteFreeCandidate);
 
+// ── Customers ───────────────────────────────────────────────────────────────
+router.get('/customers', check_role(['SUPERADMIN']), superadminController.getCustomers);
+router.get('/customers/:id', check_role(['SUPERADMIN']), superadminController.getCustomerDetail);
+router.patch('/customers/:id', check_role(['SUPERADMIN']), superadminController.updateCustomer);
+router.delete('/customers/:id', check_role(['SUPERADMIN']), superadminController.deleteCustomer);
+router.post('/customers/:id/grant-book', check_role(['SUPERADMIN']), superadminController.grantBookToCustomer);
+
+// ── Order repair ────────────────────────────────────────────────────────────
+router.post('/orders/:id/fulfil', check_role(['SUPERADMIN']), superadminController.fulfilOrder);
+router.post('/orders/reconcile', check_role(['SUPERADMIN']), superadminController.runPaymentReconcile);
+
 // Coupon management routes (SUPERADMIN role only)
 router.get('/coupons', check_role(['SUPERADMIN']), superadminController.getCoupons);
 router.post('/coupons', check_role(['SUPERADMIN']), superadminController.createCoupon);

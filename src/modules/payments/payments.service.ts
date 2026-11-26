@@ -239,7 +239,6 @@ export const payments_service = {
                throw new Error('Invalid signature');
           }
 
-          // Signature is valid, update payment status
           const paymentRows = await db
                .select()
                .from(payments)
@@ -251,15 +250,89 @@ export const payments_service = {
                throw new Error('Payment record not found');
           }
 
+          return this.fulfil_payment(payment.id, {
+               razorpay_payment_id,
+               razorpay_signature,
+               source: 'checkout',
+          });
+     },
+
+     /**
+      * Everything that must happen once a payment is captured: mark it
+      * completed, grant the books or subscription, clear the cart, record
+      * coupon use, build the invoice and email the receipt.
+      *
+      * Idempotent. Called from three places - the browser's verify call, the
+      * Razorpay webhook, and the reconcile job - so a payment is fulfilled
+      * even when the buyer closes the tab before the callback runs.
+      */
+     /** Fulfil by Razorpay order id (what the webhook carries). */
+     async fulfil_payment_by_order(
+          razorpay_order_id: string,
+          opts: {
+               razorpay_payment_id?: string;
+               source?: 'checkout' | 'webhook' | 'reconcile' | 'admin';
+          } = {}
+     ) {
+          const rows = await db
+               .select({ id: payments.id })
+               .from(payments)
+               .where(eq(payments.razorpay_order_id, razorpay_order_id))
+               .limit(1);
+
+          if (!rows[0]) {
+               console.warn(
+                    `[PAYMENTS] Webhook for unknown order ${razorpay_order_id} - nothing to fulfil.`
+               );
+               return null;
+          }
+
+          return this.fulfil_payment(rows[0].id, opts);
+     },
+
+     async fulfil_payment(
+          paymentId: string,
+          opts: {
+               razorpay_payment_id?: string;
+               razorpay_signature?: string;
+               source?: 'checkout' | 'webhook' | 'reconcile' | 'admin';
+               force?: boolean;
+          } = {}
+     ) {
+          const source = opts.source || 'checkout';
+
+          const rows = await db
+               .select()
+               .from(payments)
+               .where(eq(payments.id, paymentId))
+               .limit(1);
+          const payment = rows[0];
+
+          if (!payment) {
+               throw new Error('Payment record not found');
+          }
+
+          // Already done - a second webhook delivery or a retry must not
+          // double-grant, re-mail or re-count a coupon.
+          if (payment.status === 'completed' && !opts.force) {
+               return payment;
+          }
+
           await db
                .update(payments)
                .set({
-                    razorpay_payment_id,
-                    razorpay_signature,
+                    razorpay_payment_id:
+                         opts.razorpay_payment_id || payment.razorpay_payment_id,
+                    razorpay_signature:
+                         opts.razorpay_signature || payment.razorpay_signature,
                     status: 'completed',
                     updatedAt: new Date(),
                })
                .where(eq(payments.id, payment.id));
+
+          console.log(
+               `[PAYMENTS] Fulfilling ${payment.id} (order ${payment.razorpay_order_id}) via ${source}`
+          );
 
           // Record coupon usage if a coupon was used
           if (payment.coupon_id) {
@@ -339,7 +412,7 @@ export const payments_service = {
                     const pdfBuffer = await generateInvoicePDF({
                          invoiceNo: `OAK-2026-27-${payment.id.substring(0, 4).toUpperCase()}`,
                          date: formattedDate,
-                         orderNo: razorpay_order_id,
+                         orderNo: payment.razorpay_order_id,
                          paymentRef: payment.id,
                          buyerName: user.username || 'Reader',
                          shippingAddress: payment.shippingAddress || undefined,

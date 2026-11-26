@@ -4,6 +4,7 @@ import { eq, sql, desc, asc, and, gte, lt, lte, isNull, count, sum } from 'drizz
 import { redisClient } from '../../config/redis';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { logActivity } from '../../utils/audit_logger';
 
 const REVENUE_CACHE_KEY = 'superadmin:analytics:revenue';
 const CACHE_TTL = 300; // 5 minutes
@@ -1129,4 +1130,243 @@ export async function deleteFreeCandidate(userId: string) {
           .returning({ id: users.id });
 
      return !!deleted;
+}
+
+// ── Customers ────────────────────────────────────────────────────────────────
+
+export async function getCustomers(params: {
+     page?: number;
+     limit?: number;
+     search?: string;
+}) {
+     const page = Math.max(1, Number(params.page) || 1);
+     const limit = Math.min(100, Math.max(1, Number(params.limit) || 25));
+     const term = (params.search || '').trim();
+
+     const where = term
+          ? sql`(u.username ILIKE ${'%' + term + '%'} OR u.email ILIKE ${'%' + term + '%'})`
+          : sql`TRUE`;
+
+     const rows = await db.execute(sql`
+          SELECT u.id, u.username, u.email, u.role, u.is_free_candidate,
+                 u.created_at,
+                 COALESCE(o.orders, 0)       AS orders,
+                 COALESCE(o.spent, 0)        AS spent_paise,
+                 COALESCE(s.books, 0)        AS books,
+                 o.last_order_at
+          FROM users u
+          LEFT JOIN (
+               SELECT user_id,
+                      COUNT(*) FILTER (WHERE status = 'completed')            AS orders,
+                      SUM(amount) FILTER (WHERE status = 'completed')         AS spent,
+                      MAX(created_at) FILTER (WHERE status = 'completed')     AS last_order_at
+               FROM payments GROUP BY user_id
+          ) o ON o.user_id = u.id
+          LEFT JOIN (
+               SELECT user_id, COUNT(*) AS books FROM bookshelves GROUP BY user_id
+          ) s ON s.user_id = u.id
+          WHERE ${where}
+          ORDER BY u.created_at DESC
+          LIMIT ${limit} OFFSET ${(page - 1) * limit}
+     `);
+
+     const totalRows = await db.execute(sql`
+          SELECT COUNT(*)::int AS total FROM users u WHERE ${where}
+     `);
+
+     return {
+          customers: (rows as any).rows ?? rows,
+          total: Number(((totalRows as any).rows ?? totalRows)[0]?.total || 0),
+          page,
+          limit,
+     };
+}
+
+export async function getCustomerDetail(userId: string) {
+     const [user] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+
+     if (!user) throw new Error('Customer not found');
+
+     const orders = await db.execute(sql`
+          SELECT p.id, p.razorpay_order_id, p.razorpay_payment_id, p.status,
+                 p.amount, p.original_amount, p.discount_amount, p.tier,
+                 p.shipping_address, p.billing_address, p.invoice_key,
+                 p.created_at,
+                 COALESCE(b.title, string_agg(ib.title, '; ')) AS items
+          FROM payments p
+          LEFT JOIN books b ON b.id = p.book_id
+          LEFT JOIN payment_items pi ON pi.payment_id = p.id
+          LEFT JOIN books ib ON ib.id = pi.book_id
+          WHERE p.user_id = ${userId}
+          GROUP BY p.id, b.title
+          ORDER BY p.created_at DESC
+     `);
+
+     const library = await db.execute(sql`
+          SELECT s.book_id, b.title, s.shelf_name, s.added_at
+          FROM bookshelves s
+          JOIN books b ON b.id = s.book_id
+          WHERE s.user_id = ${userId}
+          ORDER BY s.added_at DESC
+     `);
+
+     const { password, ...safeUser } = user as any;
+
+     return {
+          customer: safeUser,
+          orders: (orders as any).rows ?? orders,
+          library: (library as any).rows ?? library,
+     };
+}
+
+export async function updateCustomer(
+     userId: string,
+     data: {
+          username?: string;
+          email?: string;
+          billing_address_line1?: string;
+          billing_address_line2?: string;
+          billing_city?: string;
+          billing_state?: string;
+          billing_postal_code?: string;
+          billing_country?: string;
+          marketing_emails?: boolean;
+          book_notifications?: boolean;
+     }
+) {
+     const [existing] = await db
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+
+     if (!existing) throw new Error('Customer not found');
+
+     const updateData: Record<string, unknown> = { updatedAt: new Date() };
+     const fields = [
+          'username',
+          'email',
+          'billing_address_line1',
+          'billing_address_line2',
+          'billing_city',
+          'billing_state',
+          'billing_postal_code',
+          'billing_country',
+          'marketing_emails',
+          'book_notifications',
+     ] as const;
+
+     for (const key of fields) {
+          if (data[key] !== undefined) updateData[key] = data[key];
+     }
+
+     if (data.email) {
+          const clash = await db
+               .select({ id: users.id })
+               .from(users)
+               .where(eq(users.email, data.email))
+               .limit(1);
+          if (clash[0] && clash[0].id !== userId) {
+               throw new Error('Email is already in use by another account');
+          }
+     }
+
+     const [updated] = await db
+          .update(users)
+          .set(updateData as any)
+          .where(eq(users.id, userId))
+          .returning();
+
+     const { password, ...safeUser } = updated as any;
+     return safeUser;
+}
+
+export async function deleteCustomer(userId: string) {
+     const [user] = await db
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+
+     if (!user) throw new Error('Customer not found');
+     if (['SUPERADMIN', 'ADMIN', 'MANAGER'].includes(user.role)) {
+          throw new Error('Staff accounts cannot be deleted from the Customers tab');
+     }
+
+     // books.uploader_id cascades, so an account that uploaded anything must
+     // never be deleted here.
+     const [{ value: uploaded }] = await db
+          .select({ value: count() })
+          .from(books)
+          .where(eq(books.uploader_id, userId));
+
+     if (Number(uploaded) > 0) {
+          throw new Error(
+               `This account uploaded ${uploaded} book(s) and cannot be deleted`
+          );
+     }
+
+     await db.delete(users).where(eq(users.id, userId));
+     return true;
+}
+
+/**
+ * Give a customer a book without a payment — for a captured-but-unregistered
+ * order, a replacement, or a goodwill copy. Logged against the admin.
+ */
+export async function grantBookToCustomer(
+     userId: string,
+     bookId: string,
+     adminId: string,
+     note?: string
+) {
+     const [user] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+     if (!user) throw new Error('Customer not found');
+
+     const [book] = await db
+          .select({ id: books.id, title: books.title, set_parent_id: books.set_parent_id })
+          .from(books)
+          .where(eq(books.id, bookId))
+          .limit(1);
+     if (!book) throw new Error('Book not found');
+     if (book.set_parent_id) {
+          throw new Error('Grant the set, not one of its volumes');
+     }
+
+     const existing = await db
+          .select({ id: bookshelves.id })
+          .from(bookshelves)
+          .where(and(eq(bookshelves.user_id, userId), eq(bookshelves.book_id, bookId)))
+          .limit(1);
+
+     if (existing[0]) {
+          return { alreadyOwned: true, title: book.title };
+     }
+
+     await db.insert(bookshelves).values({
+          id: crypto.randomUUID(),
+          user_id: userId,
+          book_id: bookId,
+          shelf_name: 'Purchased',
+          added_at: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+     });
+
+     await logActivity(adminId, null, 'ADMIN_GRANT_BOOK', {
+          grantedTo: userId,
+          bookId,
+          bookTitle: book.title,
+          note: note || null,
+     });
+
+     return { alreadyOwned: false, title: book.title };
 }

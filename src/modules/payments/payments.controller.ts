@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { payments_service } from './payments.service';
+import { verifyWebhookSignature } from '../../utils/payment_reconcile.job';
 import { coupons_service } from './coupons.service';
 
 export const payments_controller = {
@@ -163,6 +164,57 @@ export const payments_controller = {
                return res.status(400).json({
                     message: error.message || 'Failed to retrieve payment history',
                });
+          }
+     },
+
+     /**
+      * Razorpay webhook. Fulfilment must not depend on the buyer's browser
+      * reaching /verify, so this is the authoritative path: Razorpay calls it
+      * server-to-server on payment.captured.
+      *
+      * Mounted with a raw body parser so the HMAC is computed over the exact
+      * bytes Razorpay signed. Always answers 200 once the signature checks
+      * out - Razorpay retries anything else, and fulfilment is idempotent.
+      */
+     async razorpay_webhook(req: Request, res: Response): Promise<any> {
+          const signature = String(req.headers['x-razorpay-signature'] || '');
+          const rawBody: Buffer | string = (req as any).body;
+
+          if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
+               console.error('[WEBHOOK] RAZORPAY_WEBHOOK_SECRET is not set - rejecting.');
+               return res.status(503).json({ message: 'Webhook not configured' });
+          }
+
+          if (!verifyWebhookSignature(rawBody, signature)) {
+               console.warn('[WEBHOOK] Rejected a delivery with a bad signature.');
+               return res.status(400).json({ message: 'Invalid signature' });
+          }
+
+          let event: any;
+          try {
+               event = JSON.parse(
+                    typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8')
+               );
+          } catch {
+               return res.status(400).json({ message: 'Malformed payload' });
+          }
+
+          // Acknowledge first; a slow fulfilment must not trigger retries.
+          res.status(200).json({ received: true });
+
+          try {
+               if (event?.event !== 'payment.captured') return;
+
+               const entity = event?.payload?.payment?.entity;
+               const orderId = entity?.order_id;
+               if (!orderId) return;
+
+               await payments_service.fulfil_payment_by_order(orderId, {
+                    razorpay_payment_id: entity?.id,
+                    source: 'webhook',
+               });
+          } catch (err) {
+               console.error('[WEBHOOK] Failed to fulfil a captured payment:', err);
           }
      },
 
