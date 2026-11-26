@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import { mailConfig, securityConfig } from '../config/app.config';
-import { generateInvoicePDF } from './pdf.service';
+import { generateInvoicePDF, GST_RATE_PERCENT } from './pdf.service';
 
 const transporter = nodemailer.createTransport({
      host: mailConfig.smtp_host,
@@ -444,7 +444,10 @@ export const sendPurchaseInvoiceMail = async (
 ) => {
      const totalAmountInr = (amount / 100).toFixed(2);
      const totalPaidVal = Number(totalAmountInr);
-     const taxVal = Number((totalPaidVal - (totalPaidVal / 1.18)).toFixed(2));
+     // Prices include GST, so the tax is backed out of the total.
+     const taxVal = Number(
+          (totalPaidVal - totalPaidVal / (1 + GST_RATE_PERCENT / 100)).toFixed(2)
+     );
      const subtotalVal = Number((totalPaidVal - taxVal).toFixed(2));
 
      const formattedDate = new Date(date).toLocaleDateString('en-IN', {
@@ -728,5 +731,117 @@ export const sendNewBooksAnnouncementMail = async (
                </table>
                </body></html>
           `,
+     });
+};
+
+/** Where order notifications go. Finance/accounts, overridable per deployment. */
+export const ORDER_NOTIFICATION_EMAIL =
+     process.env.ORDER_NOTIFICATION_EMAIL || 'fpa@oakbridge.in';
+
+/**
+ * Tells accounts an order was paid, with everything needed to book it: buyer,
+ * addresses, items, the GST split and the Razorpay references. The invoice PDF
+ * is attached when one was generated.
+ */
+export const sendOrderNotificationMail = async (
+     order: {
+          orderId: string;
+          paymentId: string;
+          date: string;
+          amount: number;
+          buyerName: string;
+          buyerEmail: string;
+          items: { title: string; author?: string; isbn?: string; price: number }[];
+          tier?: string;
+          shippingAddress?: string;
+          billingAddress?: string;
+          source?: string;
+     },
+     pdfBuffer?: Buffer
+) => {
+     const totalInr = (order.amount / 100).toFixed(2);
+     const gstInr = (
+          (order.amount * GST_RATE_PERCENT) /
+          (100 + GST_RATE_PERCENT) /
+          100
+     ).toFixed(2);
+     const baseInr = (Number(totalInr) - Number(gstInr)).toFixed(2);
+
+     const rows = order.items
+          .map(
+               (item) => `
+               <tr>
+                 <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.title)}</td>
+                 <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;">${escapeHtml(item.isbn || '-')}</td>
+                 <td style="padding:6px 8px;border-bottom:1px solid #E5E7EB;text-align:right;">₹${(item.price / 100).toFixed(2)}</td>
+               </tr>`
+          )
+          .join('');
+
+     const line = (label: string, value?: string) =>
+          value
+               ? `<tr><td style="padding:3px 8px 3px 0;color:#6B7280;">${label}</td><td style="padding:3px 0;">${escapeHtml(value)}</td></tr>`
+               : '';
+
+     await transporter.sendMail({
+          from: process.env.SMTP_EMAIL || mailConfig.auth.smtp_email,
+          to: ORDER_NOTIFICATION_EMAIL,
+          replyTo: order.buyerEmail,
+          subject: `New order ₹${totalInr} — ${order.buyerName} (${order.orderId})`,
+          html: `
+               <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
+               <body style="margin:0;padding:24px;background:#F5F7FA;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1F2937;">
+                 <div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #E5E7EB;padding:24px;">
+                   <h1 style="margin:0 0 4px;font-family:Georgia,serif;font-size:20px;font-weight:normal;color:#002B5C;">Order paid</h1>
+                   <p style="margin:0 0 18px;font-size:13px;color:#6B7280;">
+                     ${escapeHtml(order.date)}${order.source ? ` · fulfilled via ${escapeHtml(order.source)}` : ''}
+                   </p>
+
+                   <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:18px;">
+                     ${line('Buyer', order.buyerName)}
+                     ${line('Email', order.buyerEmail)}
+                     ${line('Order ID', order.orderId)}
+                     ${line('Payment ID', order.paymentId)}
+                     ${line('Billing address', order.billingAddress)}
+                     ${line('Shipping address', order.shippingAddress)}
+                     ${line('Subscription', order.tier)}
+                   </table>
+
+                   <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                     <tr style="background:#F9FAFB;">
+                       <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #E5E7EB;">Item</th>
+                       <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #E5E7EB;">ISBN</th>
+                       <th style="padding:6px 8px;text-align:right;border-bottom:1px solid #E5E7EB;">Amount</th>
+                     </tr>
+                     ${rows}
+                     <tr>
+                       <td colspan="2" style="padding:6px 8px;text-align:right;color:#6B7280;">Taxable value</td>
+                       <td style="padding:6px 8px;text-align:right;">₹${baseInr}</td>
+                     </tr>
+                     <tr>
+                       <td colspan="2" style="padding:6px 8px;text-align:right;color:#6B7280;">GST @ ${GST_RATE_PERCENT}%</td>
+                       <td style="padding:6px 8px;text-align:right;">₹${gstInr}</td>
+                     </tr>
+                     <tr>
+                       <td colspan="2" style="padding:8px;text-align:right;font-weight:700;color:#002B5C;">Total paid</td>
+                       <td style="padding:8px;text-align:right;font-weight:700;color:#002B5C;">₹${totalInr}</td>
+                     </tr>
+                   </table>
+
+                   <p style="margin:18px 0 0;font-size:11.5px;color:#9CA3AF;">
+                     Sent automatically by the Oakbridge eBook store. Reply to reach the buyer.
+                   </p>
+                 </div>
+               </body></html>
+          `,
+          attachments: pdfBuffer
+               ? [
+                        {
+                             filename: `Invoice_${order.orderId}.pdf`,
+                             content: pdfBuffer,
+                             contentType: 'application/pdf',
+                        },
+                   ]
+               : undefined,
      });
 };

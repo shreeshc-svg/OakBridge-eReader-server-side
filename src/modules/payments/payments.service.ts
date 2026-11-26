@@ -6,7 +6,7 @@ import { eq, inArray, and, sql } from 'drizzle-orm';
 import { coupons_service } from './coupons.service';
 import { invalidateRevenueCache } from '../superadmin/superadmin.service';
 import { logActivity } from '../../utils/audit_logger';
-import { sendPurchaseInvoiceMail } from '../../utils/mail.service';
+import { sendOrderNotificationMail, sendPurchaseInvoiceMail } from '../../utils/mail.service';
 import { generateInvoicePDF } from '../../utils/pdf.service';
 import { upload_buffer_to_s3 } from '../../utils/s3';
 
@@ -357,6 +357,7 @@ export const payments_service = {
           }
 
           // Generate & upload invoice PDF to S3
+          let generatedInvoice: Buffer | undefined;
           try {
                const userRows = await db
                     .select()
@@ -424,6 +425,7 @@ export const payments_service = {
 
                     const invoiceKey = `invoices/INV-${payment.id}.pdf`;
                     await upload_buffer_to_s3(pdfBuffer, invoiceKey);
+                    generatedInvoice = pdfBuffer;
 
                     await db
                          .update(payments)
@@ -606,6 +608,27 @@ export const payments_service = {
                               price: item.price || 0,
                          }));
                     }
+
+                    sendOrderNotificationMail(
+                         {
+                              orderId: payment.razorpay_order_id || 'N/A',
+                              paymentId: payment.razorpay_payment_id || 'N/A',
+                              date: new Date().toLocaleString('en-IN', {
+                                   timeZone: 'Asia/Kolkata',
+                              }),
+                              amount: payment.amount || 0,
+                              buyerName: user.username || 'Reader',
+                              buyerEmail: user.email,
+                              items: emailItems,
+                              tier: payment.tier || undefined,
+                              shippingAddress: payment.shippingAddress || undefined,
+                              billingAddress: payment.billingAddress || undefined,
+                              source,
+                         },
+                         generatedInvoice
+                    ).catch((mailErr) => {
+                         console.error('SMTP: Failed to send the order notification:', mailErr);
+                    });
 
                     sendPurchaseInvoiceMail(
                          user.email,
