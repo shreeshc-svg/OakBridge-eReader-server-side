@@ -66,6 +66,9 @@ function numberToWords(num: number): string {
      return k(num);
 }
 
+/** GST on books/e-books. Catalogue prices include it. */
+export const GST_RATE_PERCENT = 5;
+
 export const generateInvoicePDF = (data: InvoiceData): Promise<Buffer> => {
      return new Promise((resolve, reject) => {
           try {
@@ -341,24 +344,54 @@ export const generateInvoicePDF = (data: InvoiceData): Promise<Buffer> => {
                
                const totalInr = formatINR(data.totalAmount / 100);
 
-               doc.font('Helvetica')
-                  .fontSize(7.5)
-                  .fillColor('#4B5563')
-                  .text('Subtotal', 330, totalRowY + 4, { width: 150, align: 'right' })
-                  .font('Helvetica-Bold')
-                  .fillColor('#1F2937')
-                  .text(totalInr, 490, totalRowY + 4, { width: 75, align: 'right' });
+               // Prices are GST-inclusive, so the tax is backed out of the
+               // total: base = total x 100/105, GST = total x 5/105, split
+               // equally into CGST and SGST (intra-state, Haryana).
+               const totalPaise = data.totalAmount;
+               const gstPaise = Math.round((totalPaise * GST_RATE_PERCENT) / (100 + GST_RATE_PERCENT));
+               const basePaise = totalPaise - gstPaise;
+               const cgstPaise = Math.floor(gstPaise / 2);
+               const sgstPaise = gstPaise - cgstPaise;
+               const half = GST_RATE_PERCENT / 2;
 
-               doc.moveTo(30, totalRowY + 14).lineTo(565, totalRowY + 14).strokeColor('#E5E7EB').stroke();
+               const taxLines: [string, number][] = [
+                    ['Taxable Value', basePaise],
+                    [`CGST @ ${half}%`, cgstPaise],
+                    [`SGST @ ${half}%`, sgstPaise],
+               ];
+
+               let taxY = totalRowY + 4;
+               taxLines.forEach(([label, paise]) => {
+                    doc.font('Helvetica')
+                       .fontSize(7.5)
+                       .fillColor('#4B5563')
+                       .text(label, 330, taxY, { width: 150, align: 'right' })
+                       .font('Helvetica-Bold')
+                       .fillColor('#1F2937')
+                       .text(formatINR(paise / 100), 490, taxY, { width: 75, align: 'right' });
+                    taxY += 10;
+               });
+
+               doc.moveTo(30, taxY).lineTo(565, taxY).strokeColor('#E5E7EB').stroke();
 
                doc.font('Helvetica-Bold')
                   .fontSize(8.5)
                   .fillColor('#002B5C')
-                  .text('Total', 330, totalRowY + 17, { width: 150, align: 'right' })
-                  .text(`INR ${totalInr}`, 490, totalRowY + 17, { width: 75, align: 'right' });
+                  .text('Total', 330, taxY + 3, { width: 150, align: 'right' })
+                  .text(`INR ${totalInr}`, 490, taxY + 3, { width: 75, align: 'right' });
+
+               doc.font('Helvetica')
+                  .fontSize(6.5)
+                  .fillColor('#6B7280')
+                  .text(
+                       `All prices are inclusive of ${GST_RATE_PERCENT}% GST. HSN/SAC 4901 (printed and electronic books).`,
+                       30,
+                       taxY + 15,
+                       { width: 300 }
+                  );
 
                // 5. Amount Chargeable in words
-               const wordsY = tableY + tableHeight + 8;
+               const wordsY = tableY + tableHeight + 16;
                const amountInRupees = Math.floor(data.totalAmount / 100);
                const words = numberToWords(amountInRupees);
 

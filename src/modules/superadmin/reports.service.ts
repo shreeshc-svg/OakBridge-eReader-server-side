@@ -12,6 +12,7 @@ import {
      categories 
 } from '../../db/schemas';
 import { eq, sql, desc, and, gte, lte, count, sum } from 'drizzle-orm';
+import { GST_RATE_PERCENT } from '../../utils/pdf.service';
 
 // Helper to format date range
 function getDateRangeConditions(tableField: any, startDate?: string, endDate?: string) {
@@ -283,7 +284,8 @@ export async function getRevenueReport(startDate?: string, endDate?: string, cat
 
           const rows = Array.from(groupMap.entries()).map(([period, data]) => {
                const grossInr = data.gross / 100;
-               const gstInr = (grossInr * 18) / 118;
+               // Catalogue prices include 5% GST, so it is backed out of gross.
+               const gstInr = (grossInr * GST_RATE_PERCENT) / (100 + GST_RATE_PERCENT);
                const discountsInr = data.discounts / 100;
                const shippingInr = data.shipping / 100;
                const refundsInr = data.refunds / 100;
